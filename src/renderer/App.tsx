@@ -801,9 +801,10 @@ function PhotoTile({ photo, onOpen }: { photo: PhotoAsset; onOpen: () => void })
       title={photo.name}
     >
       <img
-        src={photo.url}
+        src={photo.thumbnailUrl}
         alt={photo.name}
         loading="lazy"
+        decoding="async"
       />
       <span>
         <CalendarDays size={13} />

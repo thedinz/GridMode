@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import exifr from "exifr";
+import sharp from "sharp";
 import type {
   ExifRow,
   HomePayload,
@@ -26,6 +27,8 @@ import type {
 const supportedExtensions = new Set([
   ".jpg",
   ".jpeg",
+  ".jpe",
+  ".jfif",
   ".png",
   ".webp",
   ".gif",
@@ -33,8 +36,25 @@ const supportedExtensions = new Set([
   ".tif",
   ".tiff",
   ".heic",
-  ".heif"
+  ".heif",
+  ".avif"
 ]);
+
+const browserNativeExtensions = new Set([
+  ".jpg",
+  ".jpeg",
+  ".jpe",
+  ".jfif",
+  ".png",
+  ".webp",
+  ".gif",
+  ".bmp",
+  ".avif"
+]);
+
+const thumbnailSize = 420;
+const displayMaxDimension = 3840;
+const imageCacheVersion = "v1";
 
 const monthNames = [
   "January",
@@ -71,6 +91,10 @@ let activeScan: Promise<LibrarySummary> | null = null;
 let updateDownloadInProgress = false;
 let promptedDownloadVersion: string | undefined;
 let promptedInstallVersion: string | undefined;
+let activeImageJobs = 0;
+const imageJobLimit = Math.max(2, Math.min(os.cpus().length - 1, 4));
+const queuedImageJobs: Array<() => void> = [];
+const pendingImageRenders = new Map<string, Promise<string>>();
 
 const gotLock = app.requestSingleInstanceLock();
 
@@ -141,8 +165,13 @@ async function createWindow(): Promise<void> {
 function registerPhotoProtocol(): void {
   protocol.handle("gridmode-photo", async (request) => {
     const url = new URL(request.url);
+    const variant = normalizePhotoVariant(url.hostname);
     const encodedPath = url.pathname.replace(/^\//, "");
     const filePath = decodePathToken(encodedPath);
+
+    if (!variant) {
+      return new Response("Unsupported photo request.", { status: 400 });
+    }
 
     if (!settings.photoDirectory || !isInsideDirectory(settings.photoDirectory, filePath)) {
       return new Response("Photo is outside the configured library.", { status: 403 });
@@ -150,9 +179,23 @@ function registerPhotoProtocol(): void {
 
     try {
       await fs.access(filePath);
+      if (variant === "thumb") {
+        return serveRenderedPhoto(filePath, "thumb");
+      }
+
+      if (variant === "display" && needsRenderedDisplay(filePath)) {
+        return serveRenderedPhoto(filePath, "display");
+      }
+
       return net.fetch(pathToFileURL(filePath).toString());
-    } catch {
-      return new Response("Photo could not be read.", { status: 404 });
+    } catch (error) {
+      if (error instanceof UnsupportedImageError) {
+        return new Response(error.message, { status: 415 });
+      }
+      if (isMissingFileError(error)) {
+        return new Response("Photo could not be read.", { status: 404 });
+      }
+      return new Response(`Photo could not be rendered: ${getErrorMessage(error)}`, { status: 500 });
     }
   });
 }
@@ -445,7 +488,8 @@ async function buildPhotoAsset(filePath: string): Promise<PhotoAsset> {
     directory: path.dirname(filePath),
     extension: path.extname(filePath).toLowerCase().replace(".", ""),
     size: stats.size,
-    url: makePhotoUrl(filePath),
+    url: makePhotoUrl(filePath, "display"),
+    thumbnailUrl: makePhotoUrl(filePath, "thumb"),
     capturedAt: capturedAt.toISOString(),
     dateSource: parsed.capturedAt ? "exif" : "file",
     year,
@@ -630,8 +674,142 @@ async function mapLimit<T, R>(
   return results;
 }
 
-function makePhotoUrl(filePath: string): string {
-  return `gridmode-photo://image/${encodePathToken(filePath)}`;
+class UnsupportedImageError extends Error {
+  constructor(filePath: string, reason: string) {
+    super(`${path.basename(filePath)} is not readable by GridMode's image renderer: ${reason}`);
+  }
+}
+
+function normalizePhotoVariant(value: string): "image" | "display" | "thumb" | undefined {
+  if (value === "image" || value === "display" || value === "thumb") {
+    return value;
+  }
+  return undefined;
+}
+
+function needsRenderedDisplay(filePath: string): boolean {
+  return !browserNativeExtensions.has(path.extname(filePath).toLowerCase());
+}
+
+async function serveRenderedPhoto(filePath: string, variant: "display" | "thumb"): Promise<Response> {
+  const cachedPath = await getCachedRender(filePath, variant);
+  const bytes = await fs.readFile(cachedPath);
+
+  return new Response(new Uint8Array(bytes), {
+    headers: {
+      "content-type": "image/webp",
+      "cache-control": "public, max-age=31536000, immutable"
+    }
+  });
+}
+
+async function getCachedRender(filePath: string, variant: "display" | "thumb"): Promise<string> {
+  const stats = await fs.stat(filePath);
+  const outputPath = getImageCachePath(filePath, stats, variant);
+
+  try {
+    await fs.access(outputPath);
+    return outputPath;
+  } catch {
+    // Cache miss, fall through and render.
+  }
+
+  const existingRender = pendingImageRenders.get(outputPath);
+  if (existingRender) {
+    return existingRender;
+  }
+
+  const renderPromise = runImageJob(async () => {
+    await fs.mkdir(path.dirname(outputPath), { recursive: true });
+    await renderImage(filePath, outputPath, variant);
+    return outputPath;
+  }).finally(() => {
+    pendingImageRenders.delete(outputPath);
+  });
+
+  pendingImageRenders.set(outputPath, renderPromise);
+  return renderPromise;
+}
+
+function getImageCachePath(
+  filePath: string,
+  stats: { size: number; mtimeMs: number },
+  variant: "display" | "thumb"
+): string {
+  const hash = crypto
+    .createHash("sha1")
+    .update(`${imageCacheVersion}\0${variant}\0${filePath}\0${stats.size}\0${Math.trunc(stats.mtimeMs)}`)
+    .digest("hex");
+
+  return path.join(app.getPath("userData"), "image-cache", variant, hash.slice(0, 2), `${hash}.webp`);
+}
+
+async function renderImage(filePath: string, outputPath: string, variant: "display" | "thumb"): Promise<void> {
+  try {
+    const image = sharp(filePath, {
+      failOn: "none",
+      pages: 1
+    }).rotate();
+
+    if (variant === "thumb") {
+      await image
+        .resize({
+          width: thumbnailSize,
+          height: thumbnailSize,
+          fit: "cover",
+          position: "attention",
+          withoutEnlargement: true
+        })
+        .toColorspace("srgb")
+        .webp({
+          quality: 78,
+          effort: 4
+        })
+        .toFile(outputPath);
+      return;
+    }
+
+    await image
+      .resize({
+        width: displayMaxDimension,
+        height: displayMaxDimension,
+        fit: "inside",
+        withoutEnlargement: true
+      })
+      .toColorspace("srgb")
+      .webp({
+        quality: 88,
+        effort: 4
+      })
+      .toFile(outputPath);
+  } catch (error) {
+    throw new UnsupportedImageError(filePath, getErrorMessage(error));
+  }
+}
+
+function runImageJob<T>(job: () => Promise<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const start = () => {
+      activeImageJobs += 1;
+      job()
+        .then(resolve, reject)
+        .finally(() => {
+          activeImageJobs -= 1;
+          queuedImageJobs.shift()?.();
+        });
+    };
+
+    if (activeImageJobs < imageJobLimit) {
+      start();
+      return;
+    }
+
+    queuedImageJobs.push(start);
+  });
+}
+
+function makePhotoUrl(filePath: string, variant: "display" | "thumb" | "image" = "image"): string {
+  return `gridmode-photo://${variant}/${encodePathToken(filePath)}`;
 }
 
 function encodePathToken(filePath: string): string {
@@ -723,6 +901,15 @@ function formatExifValue(value: unknown): string | undefined {
     return undefined;
   }
   return String(value);
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    ((error as { code?: unknown }).code === "ENOENT" || (error as { code?: unknown }).code === "EACCES")
+  );
 }
 
 function getErrorMessage(error: unknown): string {

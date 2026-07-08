@@ -16,6 +16,7 @@ export interface PhotoAsset {
   extension: string;
   size: number;
   url: string;
+  thumbnailUrl: string;
   capturedAt: string;
   dateSource: "exif" | "file";
   year: number;
