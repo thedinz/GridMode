@@ -105,6 +105,36 @@ export function App(): JSX.Element {
     }
   }, [mergeState]);
 
+  const checkLibraryForChanges = useCallback(async (rootDir: string) => {
+    mergeState({
+      loading: true,
+      statusText: "Checking library",
+      scanProgress: {
+        phase: "discovering",
+        rootDir,
+        message: "Checking folders for changes"
+      }
+    });
+
+    try {
+      await window.gridMode.library.scan(false);
+      const payload = await window.gridMode.library.getHome();
+      mergeState({
+        summary: payload.summary,
+        homePhotos: payload.photos,
+        loading: false,
+        statusText: undefined,
+        scanProgress: undefined
+      });
+    } catch (error) {
+      mergeState({
+        loading: false,
+        statusText: getErrorMessage(error),
+        scanProgress: undefined
+      });
+    }
+  }, [mergeState]);
+
   const openView = useCallback(
     async (nextView: View) => {
       setView(nextView);
@@ -146,11 +176,19 @@ export function App(): JSX.Element {
         }
         mergeState({ settings, summary });
         if (settings.photoDirectory) {
-          await loadHome({
-            label: "Checking library",
-            rootDir: settings.photoDirectory,
-            scanMessage: "Checking library for changes"
-          });
+          const hasCachedLibrary = summary.photoCount > 0 || Boolean(summary.lastScanAt);
+          if (hasCachedLibrary) {
+            await loadHome({ label: "Loading cached library" });
+            if (mounted) {
+              void checkLibraryForChanges(settings.photoDirectory);
+            }
+          } else {
+            await loadHome({
+              label: "Building library cache",
+              rootDir: settings.photoDirectory,
+              scanMessage: "Building library cache"
+            });
+          }
         } else {
           setView({ name: "home" });
           mergeState({ loading: false, statusText: undefined });
@@ -175,7 +213,7 @@ export function App(): JSX.Element {
       unsubscribeUpdates();
       unsubscribeScan();
     };
-  }, [loadHome, mergeState]);
+  }, [checkLibraryForChanges, loadHome, mergeState]);
 
   const chooseRoot = useCallback(async () => {
     mergeState({
@@ -892,8 +930,13 @@ function formatScanProgress(progress: ScanProgress, percent: number | undefined)
   if (progress.phase === "reading-metadata") {
     const processed = progress.photosProcessed ?? 0;
     const total = progress.totalPhotos ?? progress.photosFound ?? 0;
+    const reused = progress.photosReused ?? 0;
+    if (total === 0 && reused > 0) {
+      return `${reused.toLocaleString()} cached photos reused - no metadata work`;
+    }
     const suffix = percent === undefined ? "" : ` - ${percent}%`;
-    return `${processed.toLocaleString()} / ${total.toLocaleString()} photos processed${suffix}`;
+    const reusedText = reused > 0 ? ` - ${reused.toLocaleString()} cached` : "";
+    return `${processed.toLocaleString()} / ${total.toLocaleString()} photos processed${suffix}${reusedText}`;
   }
 
   if (progress.phase === "complete") {

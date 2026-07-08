@@ -55,6 +55,28 @@ const browserNativeExtensions = new Set([
 const thumbnailSize = 420;
 const displayMaxDimension = 3840;
 const imageCacheVersion = "v1";
+const libraryIndexVersion = 1;
+
+interface PhotoFileSnapshot {
+  path: string;
+  size: number;
+  mtimeMs: number;
+}
+
+interface LibraryIndexEntry {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  photo: PhotoAsset;
+}
+
+interface LibraryIndexFile {
+  version: number;
+  rootDir: string;
+  scannedAt: string;
+  warnings?: string[];
+  photos: LibraryIndexEntry[];
+}
 
 const monthNames = [
   "January",
@@ -87,6 +109,8 @@ let mainWindow: BrowserWindow | null = null;
 let settings: Settings = {};
 let cachedPhotos: PhotoAsset[] = [];
 let cachedSummary: LibrarySummary = emptySummary();
+let cachedPhotoStats = new Map<string, PhotoFileSnapshot>();
+let hasLibraryIndex = false;
 let activeScan: Promise<LibrarySummary> | null = null;
 let updateDownloadInProgress = false;
 let promptedDownloadVersion: string | undefined;
@@ -95,6 +119,10 @@ let activeImageJobs = 0;
 const imageJobLimit = Math.max(2, Math.min(os.cpus().length - 1, 4));
 const queuedImageJobs: Array<() => void> = [];
 const pendingImageRenders = new Map<string, Promise<string>>();
+
+if (process.env.GRIDMODE_USER_DATA_DIR) {
+  app.setPath("userData", process.env.GRIDMODE_USER_DATA_DIR);
+}
 
 const gotLock = app.requestSingleInstanceLock();
 
@@ -114,7 +142,7 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   settings = await readSettings();
-  cachedSummary = emptySummary(settings.photoDirectory);
+  await loadCachedLibrary(settings.photoDirectory);
   registerPhotoProtocol();
   registerIpc();
   configureUpdates();
@@ -222,6 +250,10 @@ function registerIpc(): void {
     settings = {
       photoDirectory: result.filePaths[0]
     };
+    cachedPhotos = [];
+    cachedPhotoStats = new Map();
+    cachedSummary = emptySummary(settings.photoDirectory);
+    hasLibraryIndex = false;
     await writeSettings(settings);
     const summary = await scanLibrary(true);
 
@@ -308,11 +340,13 @@ function registerIpc(): void {
 async function ensureLibrary(): Promise<LibrarySummary> {
   if (!settings.photoDirectory) {
     cachedPhotos = [];
+    cachedPhotoStats = new Map();
     cachedSummary = emptySummary();
+    hasLibraryIndex = false;
     return cachedSummary;
   }
 
-  if (cachedPhotos.length === 0) {
+  if (!hasLibraryIndex && cachedPhotos.length === 0) {
     return scanLibrary(false);
   }
 
@@ -322,7 +356,9 @@ async function ensureLibrary(): Promise<LibrarySummary> {
 async function scanLibrary(force: boolean): Promise<LibrarySummary> {
   if (!settings.photoDirectory) {
     cachedPhotos = [];
+    cachedPhotoStats = new Map();
     cachedSummary = emptySummary();
+    hasLibraryIndex = false;
     return cachedSummary;
   }
 
@@ -330,7 +366,7 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
     return activeScan;
   }
 
-  activeScan = doScan(settings.photoDirectory);
+  activeScan = doScan(settings.photoDirectory, force);
   try {
     cachedSummary = await activeScan;
     settings = {
@@ -351,7 +387,7 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
   }
 }
 
-async function doScan(rootDir: string): Promise<LibrarySummary> {
+async function doScan(rootDir: string, force: boolean): Promise<LibrarySummary> {
   const warnings: string[] = [];
   const emitProgress = createScanProgressEmitter(rootDir);
 
@@ -359,31 +395,64 @@ async function doScan(rootDir: string): Promise<LibrarySummary> {
     phase: "discovering",
     foldersScanned: 0,
     photosFound: 0,
-    message: "Finding photos"
+    message: hasLibraryIndex && !force ? "Checking folders for changes" : "Finding photos"
   });
 
   const files = await findPhotoFiles(rootDir, warnings, (progress) => {
     emitProgress({
       phase: "discovering",
       ...progress,
-      message: "Finding photos"
+      message: hasLibraryIndex && !force ? "Checking folders for changes" : "Finding photos"
     });
   });
 
+  const previousPhotos = force ? new Map<string, PhotoAsset>() : new Map(cachedPhotos.map((photo) => [photo.path, photo]));
+  const previousStats = force ? new Map<string, PhotoFileSnapshot>() : new Map(cachedPhotoStats);
+  const foundPaths = new Set(files.map((file) => file.path));
+  const filesToIndex: PhotoFileSnapshot[] = [];
+  const nextPhotos: PhotoAsset[] = [];
+  const nextStats = new Map<string, PhotoFileSnapshot>();
+  let reused = 0;
+
+  for (const file of files) {
+    const cachedPhoto = previousPhotos.get(file.path);
+    const cachedStat = previousStats.get(file.path);
+    if (cachedPhoto && cachedStat && isUnchangedFile(cachedStat, file)) {
+      nextPhotos.push(refreshCachedPhotoAsset(cachedPhoto, file));
+      nextStats.set(file.path, file);
+      reused += 1;
+    } else {
+      filesToIndex.push(file);
+    }
+  }
+
+  const removed = force ? 0 : Array.from(previousPhotos.keys()).filter((filePath) => !foundPaths.has(filePath)).length;
   let processed = 0;
   emitProgress({
     phase: "reading-metadata",
     photosFound: files.length,
     photosProcessed: processed,
-    totalPhotos: files.length,
-    message: files.length === 0 ? "No supported photos found" : "Reading dates and metadata"
+    photosReused: reused,
+    photosChanged: filesToIndex.length,
+    photosRemoved: removed,
+    totalPhotos: filesToIndex.length,
+    message:
+      files.length === 0
+        ? "No supported photos found"
+        : filesToIndex.length === 0
+          ? "No photo metadata changes found"
+          : "Reading metadata for new and changed photos"
   });
 
-  const photos = await mapLimit(files, Math.max(2, Math.min(os.cpus().length, 6)), async (filePath) => {
+  const photos = await mapLimit(filesToIndex, Math.max(2, Math.min(os.cpus().length, 6)), async (file) => {
     try {
-      return await buildPhotoAsset(filePath);
+      const photo = await buildPhotoAsset(file.path, file);
+      return {
+        photo,
+        file
+      };
     } catch (error) {
-      warnings.push(`${path.basename(filePath)}: ${getErrorMessage(error)}`);
+      warnings.push(`${path.basename(file.path)}: ${getErrorMessage(error)}`);
       return null;
     } finally {
       processed += 1;
@@ -391,24 +460,41 @@ async function doScan(rootDir: string): Promise<LibrarySummary> {
         phase: "reading-metadata",
         photosFound: files.length,
         photosProcessed: processed,
-        totalPhotos: files.length,
-        currentPath: filePath,
-        message: "Reading dates and metadata"
+        photosReused: reused,
+        photosChanged: filesToIndex.length,
+        photosRemoved: removed,
+        totalPhotos: filesToIndex.length,
+        currentPath: file.path,
+        message: "Reading metadata for new and changed photos"
       });
     }
   });
 
-  cachedPhotos = photos
-    .filter((photo): photo is PhotoAsset => photo !== null)
+  for (const item of photos) {
+    if (item) {
+      nextPhotos.push(item.photo);
+      nextStats.set(item.file.path, item.file);
+    }
+  }
+
+  cachedPhotos = nextPhotos
     .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
+  cachedPhotoStats = nextStats;
 
   const summary = buildSummary(rootDir, cachedPhotos, warnings);
+  cachedSummary = summary;
+  hasLibraryIndex = true;
+  await writeLibraryIndex(rootDir, summary);
+
   emitProgress({
     phase: "complete",
     photosFound: files.length,
     photosProcessed: processed,
-    totalPhotos: files.length,
-    message: `Indexed ${cachedPhotos.length.toLocaleString()} photos`
+    photosReused: reused,
+    photosChanged: filesToIndex.length,
+    photosRemoved: removed,
+    totalPhotos: filesToIndex.length,
+    message: formatScanCompleteMessage(cachedPhotos.length, reused, filesToIndex.length, removed)
   }, true);
 
   return summary;
@@ -418,8 +504,8 @@ async function findPhotoFiles(
   rootDir: string,
   warnings: string[],
   onProgress: (progress: Pick<ScanProgress, "foldersScanned" | "photosFound" | "currentPath">) => void
-): Promise<string[]> {
-  const found: string[] = [];
+): Promise<PhotoFileSnapshot[]> {
+  const found: PhotoFileSnapshot[] = [];
   const pending = [rootDir];
   let foldersScanned = 0;
 
@@ -443,7 +529,11 @@ async function findPhotoFiles(
       if (entry.isDirectory()) {
         pending.push(fullPath);
       } else if (entry.isFile() && supportedExtensions.has(path.extname(entry.name).toLowerCase())) {
-        found.push(fullPath);
+        try {
+          found.push(await readPhotoFileSnapshot(fullPath));
+        } catch (error) {
+          warnings.push(`${fullPath}: ${getErrorMessage(error)}`);
+        }
       }
     }
 
@@ -474,10 +564,19 @@ function createScanProgressEmitter(rootDir: string): (progress: ScanProgress, im
   };
 }
 
-async function buildPhotoAsset(filePath: string): Promise<PhotoAsset> {
+async function readPhotoFileSnapshot(filePath: string): Promise<PhotoFileSnapshot> {
   const stats = await fs.stat(filePath);
+  return {
+    path: filePath,
+    size: stats.size,
+    mtimeMs: Math.trunc(stats.mtimeMs)
+  };
+}
+
+async function buildPhotoAsset(filePath: string, snapshot?: PhotoFileSnapshot): Promise<PhotoAsset> {
+  const stats = snapshot ?? await readPhotoFileSnapshot(filePath);
   const parsed = await readFastExif(filePath);
-  const capturedAt = parsed.capturedAt ?? stats.mtime;
+  const capturedAt = parsed.capturedAt ?? new Date(stats.mtimeMs);
   const year = capturedAt.getFullYear();
   const month = capturedAt.getMonth() + 1;
 
@@ -498,6 +597,23 @@ async function buildPhotoAsset(filePath: string): Promise<PhotoAsset> {
     location: parsed.location,
     width: parsed.width,
     height: parsed.height
+  };
+}
+
+function isUnchangedFile(previous: PhotoFileSnapshot, current: PhotoFileSnapshot): boolean {
+  return previous.size === current.size && previous.mtimeMs === current.mtimeMs;
+}
+
+function refreshCachedPhotoAsset(photo: PhotoAsset, snapshot: PhotoFileSnapshot): PhotoAsset {
+  return {
+    ...photo,
+    name: path.basename(snapshot.path),
+    path: snapshot.path,
+    directory: path.dirname(snapshot.path),
+    extension: path.extname(snapshot.path).toLowerCase().replace(".", ""),
+    size: snapshot.size,
+    url: makePhotoUrl(snapshot.path, "display"),
+    thumbnailUrl: makePhotoUrl(snapshot.path, "thumb")
   };
 }
 
@@ -587,15 +703,38 @@ async function readDetailedExif(filePath: string): Promise<ExifRow[]> {
   return rows;
 }
 
-function buildSummary(rootDir: string | undefined, photos: PhotoAsset[], warnings: string[]): LibrarySummary {
+function buildSummary(
+  rootDir: string | undefined,
+  photos: PhotoAsset[],
+  warnings: string[],
+  lastScanAt: string = new Date().toISOString()
+): LibrarySummary {
   const years = groupYears(photos);
   return {
     rootDir,
     photoCount: photos.length,
     years,
-    lastScanAt: new Date().toISOString(),
+    lastScanAt,
     warnings: warnings.slice(0, 20)
   };
+}
+
+function formatScanCompleteMessage(total: number, reused: number, changed: number, removed: number): string {
+  if (changed === 0 && removed === 0 && reused > 0) {
+    return `Library up to date - reused ${reused.toLocaleString()} cached photos`;
+  }
+
+  const parts = [`Indexed ${total.toLocaleString()} photos`];
+  if (reused > 0) {
+    parts.push(`${reused.toLocaleString()} cached`);
+  }
+  if (changed > 0) {
+    parts.push(`${changed.toLocaleString()} new or changed`);
+  }
+  if (removed > 0) {
+    parts.push(`${removed.toLocaleString()} removed`);
+  }
+  return parts.join(" - ");
 }
 
 function emptySummary(rootDir?: string): LibrarySummary {
@@ -916,17 +1055,114 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+async function loadCachedLibrary(rootDir: string | undefined): Promise<void> {
+  cachedPhotos = [];
+  cachedPhotoStats = new Map();
+  cachedSummary = emptySummary(rootDir);
+  hasLibraryIndex = false;
+
+  if (!rootDir) {
+    return;
+  }
+
+  try {
+    const index = parseJson(await fs.readFile(libraryIndexPath(), "utf8")) as LibraryIndexFile;
+    if (!isUsableLibraryIndex(index, rootDir)) {
+      return;
+    }
+
+    const entries = index.photos.filter((entry) => isUsableLibraryIndexEntry(entry, rootDir));
+    cachedPhotos = entries
+      .map((entry) => refreshCachedPhotoAsset(entry.photo, entry))
+      .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
+    cachedPhotoStats = new Map(entries.map((entry) => [
+      entry.path,
+      {
+        path: entry.path,
+        size: entry.size,
+        mtimeMs: entry.mtimeMs
+      }
+    ]));
+    cachedSummary = buildSummary(rootDir, cachedPhotos, index.warnings ?? [], index.scannedAt);
+    hasLibraryIndex = true;
+  } catch {
+    cachedSummary = emptySummary(rootDir);
+  }
+}
+
+async function writeLibraryIndex(rootDir: string, summary: LibrarySummary): Promise<void> {
+  const index: LibraryIndexFile = {
+    version: libraryIndexVersion,
+    rootDir,
+    scannedAt: summary.lastScanAt ?? new Date().toISOString(),
+    warnings: summary.warnings,
+    photos: cachedPhotos.flatMap((photo) => {
+      const stat = cachedPhotoStats.get(photo.path);
+      return stat
+        ? [
+            {
+              path: photo.path,
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+              photo
+            }
+          ]
+        : [];
+    })
+  };
+
+  await fs.mkdir(app.getPath("userData"), { recursive: true });
+  const target = libraryIndexPath();
+  const temp = `${target}.tmp`;
+  await fs.writeFile(temp, JSON.stringify(index), "utf8");
+  await fs.rename(temp, target);
+}
+
+function isUsableLibraryIndex(index: LibraryIndexFile, rootDir: string): boolean {
+  return (
+    index.version === libraryIndexVersion &&
+    sameDirectory(index.rootDir, rootDir) &&
+    typeof index.scannedAt === "string" &&
+    Array.isArray(index.photos)
+  );
+}
+
+function isUsableLibraryIndexEntry(entry: LibraryIndexEntry, rootDir: string): boolean {
+  return (
+    typeof entry.path === "string" &&
+    typeof entry.size === "number" &&
+    typeof entry.mtimeMs === "number" &&
+    typeof entry.photo?.capturedAt === "string" &&
+    supportedExtensions.has(path.extname(entry.path).toLowerCase()) &&
+    isInsideDirectory(rootDir, entry.path)
+  );
+}
+
+function sameDirectory(left: string, right: string): boolean {
+  const first = path.resolve(left);
+  const second = path.resolve(right);
+  return process.platform === "win32" ? first.toLowerCase() === second.toLowerCase() : first === second;
+}
+
 function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
+}
+
+function libraryIndexPath(): string {
+  return path.join(app.getPath("userData"), "library-index.json");
 }
 
 async function readSettings(): Promise<Settings> {
   try {
     const text = await fs.readFile(settingsPath(), "utf8");
-    return JSON.parse(text) as Settings;
+    return parseJson(text) as Settings;
   } catch {
     return {};
   }
+}
+
+function parseJson(text: string): unknown {
+  return JSON.parse(text.replace(/^\uFEFF/, ""));
 }
 
 async function writeSettings(nextSettings: Settings): Promise<void> {

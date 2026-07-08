@@ -57,6 +57,9 @@ export interface ScanProgress {
   foldersScanned?: number;
   photosFound?: number;
   photosProcessed?: number;
+  photosReused?: number;
+  photosChanged?: number;
+  photosRemoved?: number;
   totalPhotos?: number;
   currentPath?: string;
   message?: string;
