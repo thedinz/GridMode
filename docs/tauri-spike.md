@@ -11,15 +11,50 @@ lets us move file scanning, metadata extraction, and thumbnail generation into a
 native backend. The spike should prove performance and behavior, not just prove
 that the React app can boot inside a different window.
 
-## Current local blocker
+## Local prerequisites
 
-This machine does not currently have Rust installed:
+Resolved for this machine: Rust was installed with `rustup` and the Mac Tauri
+spike now builds locally.
 
-- `rustc` is not available.
-- `cargo` is not available.
+Before this change, these commands were unavailable:
 
-The Tauri spike can be prepared in the repository, but a buildable proof of life
-requires the Rust toolchain and the macOS desktop build prerequisites.
+- `rustc`
+- `cargo`
+
+Any machine building the Tauri spike needs Rust and the macOS desktop build
+prerequisites.
+
+## Current Mac Test Build
+
+The spike branch now builds a Mac-only Tauri test app named
+`GridMode Tauri Spike` with the bundle identifier
+`com.thedinz.gridmode.tauri-spike`. This keeps it separate from the production
+Electron app and lets both live on the same machine during testing.
+
+Implemented in the current spike:
+
+- React/Vite renderer running in Tauri.
+- Folder selection.
+- Multiple photo locations.
+- Folder exclusions.
+- Library scan and cached index reuse.
+- Home, library, year, month, and photo views.
+- Clear cache.
+- Tauri asset URLs for local photo display.
+- Mac artifact workflow for a test DMG.
+
+Known gaps in the current spike:
+
+- It uses file modified dates instead of EXIF capture dates.
+- Photo details use the existing UI fallback rows instead of detailed EXIF.
+- Thumbnails currently point at the original local file through Tauri's asset
+  protocol instead of a generated WebP thumbnail cache.
+- HEIC/HEIF and other non-browser-native display parity still needs a native
+  renderer or sidecar strategy.
+- Updates are disabled in the spike build.
+
+This is enough to test the shell weight, launch feel, folder scanning, browsing,
+and general responsiveness. It is not yet the final feature-parity replacement.
 
 ## What can stay
 

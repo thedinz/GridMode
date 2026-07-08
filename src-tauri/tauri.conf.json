@@ -1,0 +1,54 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "GridMode Tauri Spike",
+  "version": "0.1.0",
+  "identifier": "com.thedinz.gridmode.tauri-spike",
+  "build": {
+    "frontendDist": "../dist/renderer",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeDevCommand": "pnpm vite --host 127.0.0.1",
+    "beforeBuildCommand": "pnpm build:renderer"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "GridMode",
+        "width": 1320,
+        "height": 920,
+        "minWidth": 840,
+        "minHeight": 620,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; style-src 'self' 'unsafe-inline'",
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "**/*"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "app"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "signingIdentity": "-"
+    },
+    "android": {
+      "debugApplicationIdSuffix": ".debug"
+    }
+  }
+}

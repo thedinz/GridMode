@@ -1,0 +1,56 @@
+name: Tauri Spike Artifacts
+
+on:
+  push:
+    branches:
+      - codex/tauri-spike
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mac:
+    name: Build Mac Tauri spike
+    runs-on: macos-15-intel
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri app
+        run: pnpm exec tauri build --bundles app
+
+      - name: Create simple DMG
+        run: |
+          mkdir -p src-tauri/target/release/bundle/dmg
+          hdiutil create \
+            -volname "GridMode Tauri Spike" \
+            -srcfolder "src-tauri/target/release/bundle/macos/GridMode Tauri Spike.app" \
+            -ov \
+            -format UDZO \
+            "src-tauri/target/release/bundle/dmg/GridMode Tauri Spike_0.1.0_x64.dmg"
+
+      - name: Upload Mac artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GridMode-Tauri-Spike-mac
+          path: src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error

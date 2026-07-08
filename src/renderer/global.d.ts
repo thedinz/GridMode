@@ -2,7 +2,8 @@ import type { GridModeApi } from "../preload/preload";
 
 declare global {
   interface Window {
-    gridMode: GridModeApi;
+    gridMode?: GridModeApi;
+    __TAURI_INTERNALS__?: unknown;
   }
 }
 
