@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GridModeLogo } from "./components/GridModeLogo";
+import { gridModeApi } from "./gridModeApi";
 import type {
   ExifRow,
   HomePayload,
@@ -92,7 +93,7 @@ export function App(): JSX.Element {
         : undefined
     });
     try {
-      const payload: HomePayload = await window.gridMode.library.getHome();
+      const payload: HomePayload = await gridModeApi.library.getHome();
       mergeState({
         summary: payload.summary,
         homePhotos: payload.photos,
@@ -121,8 +122,8 @@ export function App(): JSX.Element {
     });
 
     try {
-      await window.gridMode.library.scan(false);
-      const payload = await window.gridMode.library.getHome();
+      await gridModeApi.library.scan(false);
+      const payload = await gridModeApi.library.getHome();
       mergeState({
         summary: payload.summary,
         homePhotos: payload.photos,
@@ -147,22 +148,22 @@ export function App(): JSX.Element {
         await loadHome();
       } else if (nextView.name === "library") {
         mergeState({ loading: true, statusText: "Loading library" });
-        const summary = await window.gridMode.library.getYears();
+        const summary = await gridModeApi.library.getYears();
         mergeState({ summary, loading: false, statusText: undefined });
       } else if (nextView.name === "year") {
         mergeState({ loading: true, statusText: `Loading ${nextView.year}` });
-        const year = await window.gridMode.library.getYear(nextView.year);
+        const year = await gridModeApi.library.getYear(nextView.year);
         mergeState({ year, loading: false, statusText: undefined });
       } else if (nextView.name === "month") {
         mergeState({
           loading: true,
           statusText: `Loading ${monthName(nextView.month)} ${nextView.year}`
         });
-        const month = await window.gridMode.library.getMonth(nextView.year, nextView.month);
+        const month = await gridModeApi.library.getMonth(nextView.year, nextView.month);
         mergeState({ month, loading: false, statusText: undefined });
       } else if (nextView.name === "photo") {
         mergeState({ loading: true, statusText: "Reading metadata" });
-        const details = await window.gridMode.photo.getDetails(nextView.photo.path);
+        const details = await gridModeApi.photo.getDetails(nextView.photo.path);
         mergeState({ details, loading: false, statusText: undefined });
       }
     },
@@ -172,7 +173,7 @@ export function App(): JSX.Element {
   useEffect(() => {
     let mounted = true;
 
-    window.gridMode.settings
+    gridModeApi.settings
       .get()
       .then(async ({ settings, summary }) => {
         if (!mounted) {
@@ -205,8 +206,8 @@ export function App(): JSX.Element {
         }
       });
 
-    const unsubscribeUpdates = window.gridMode.updates.onStatus(setUpdateStatus);
-    const unsubscribeScan = window.gridMode.library.onProgress((progress) => {
+    const unsubscribeUpdates = gridModeApi.updates.onStatus(setUpdateStatus);
+    const unsubscribeScan = gridModeApi.library.onProgress((progress) => {
       mergeState({
         scanProgress: progress,
         statusText: progress.message
@@ -229,7 +230,7 @@ export function App(): JSX.Element {
         message: "Waiting for folder selection"
       }
     });
-    const { settings, summary } = await window.gridMode.settings.chooseRoot();
+    const { settings, summary } = await gridModeApi.settings.chooseRoot();
     mergeState({
       settings,
       summary,
@@ -252,7 +253,7 @@ export function App(): JSX.Element {
         message: "Waiting for folder selection"
       }
     });
-    const { settings, summary } = await window.gridMode.settings.addRoot();
+    const { settings, summary } = await gridModeApi.settings.addRoot();
     mergeState({
       settings,
       summary,
@@ -275,7 +276,7 @@ export function App(): JSX.Element {
         message: "Checking folders for changes"
       }
     });
-    const { settings, summary } = await window.gridMode.settings.removeRoot(rootPath);
+    const { settings, summary } = await gridModeApi.settings.removeRoot(rootPath);
     mergeState({
       settings,
       summary,
@@ -298,7 +299,7 @@ export function App(): JSX.Element {
         message: "Waiting for folder selection"
       }
     });
-    const { settings, summary } = await window.gridMode.settings.chooseExclusion();
+    const { settings, summary } = await gridModeApi.settings.chooseExclusion();
     mergeState({
       settings,
       summary,
@@ -318,7 +319,7 @@ export function App(): JSX.Element {
         message: "Checking folders for changes"
       }
     });
-    const { settings, summary } = await window.gridMode.settings.removeExclusion(excludedPath);
+    const { settings, summary } = await gridModeApi.settings.removeExclusion(excludedPath);
     mergeState({
       settings,
       summary,
@@ -338,7 +339,7 @@ export function App(): JSX.Element {
         message: "Finding photos"
       }
     });
-    const summary = await window.gridMode.library.scan(true);
+    const summary = await gridModeApi.library.scan(true);
     mergeState({ summary, loading: false, statusText: undefined, scanProgress: undefined });
     if (view.name === "home") {
       await loadHome();
@@ -355,7 +356,7 @@ export function App(): JSX.Element {
         message: "Clearing cached thumbnails and rebuilding library"
       }
     });
-    const { settings, summary } = await window.gridMode.settings.clearCache();
+    const { settings, summary } = await gridModeApi.settings.clearCache();
     mergeState({
       settings,
       summary,
@@ -383,7 +384,7 @@ export function App(): JSX.Element {
         <FirstRunView
           onChooseRoot={chooseRoot}
           updateStatus={updateStatus}
-          onCheckUpdates={() => void window.gridMode.updates.check()}
+          onCheckUpdates={() => void gridModeApi.updates.check()}
         />
       );
     }
@@ -401,7 +402,7 @@ export function App(): JSX.Element {
           onRescan={rescan}
           onClearCache={clearCache}
           updateStatus={updateStatus}
-          onCheckUpdates={() => void window.gridMode.updates.check()}
+          onCheckUpdates={() => void gridModeApi.updates.check()}
         />
       );
     }
@@ -585,7 +586,7 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
       {canDownload ? (
         <button
           className="text-button"
-          onClick={() => void window.gridMode.updates.download()}
+          onClick={() => void gridModeApi.updates.download()}
         >
           <Download size={16} />
           <span>{downloadLabel}</span>
@@ -594,7 +595,7 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
       {canInstall ? (
         <button
           className="text-button"
-          onClick={() => window.gridMode.updates.install()}
+          onClick={() => gridModeApi.updates.install()}
         >
           <CheckCircle2 size={16} />
           <span>Install</span>
