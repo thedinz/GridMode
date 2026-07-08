@@ -1,6 +1,6 @@
 {
   "name": "gridmode",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "GridMode is a desktop photo viewer built around your folders, EXIF dates, and fast visual wandering.",
   "author": "thedinz",
   "license": "MIT",
@@ -58,11 +58,13 @@
       "artifactName": "GridMode-Setup-${version}.${ext}"
     },
     "nsis": {
+      "guid": "2be86298-0152-5856-866e-d6a567f160b7",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
-      "shortcutName": "GridMode"
+      "shortcutName": "GridMode",
+      "uninstallDisplayName": "GridMode"
     },
     "publish": [
       {
