@@ -12,7 +12,9 @@
     "typecheck": "tsc -b --pretty",
     "dist": "pnpm build && electron-builder",
     "dist:win": "pnpm build && electron-builder --win nsis",
-    "release:win": "pnpm build && electron-builder --win nsis --publish always"
+    "dist:mac": "pnpm build && electron-builder --mac dmg zip --x64 --publish never",
+    "release:win": "pnpm build && electron-builder --win nsis --publish always",
+    "release:mac": "pnpm build && electron-builder --mac dmg zip --x64 --publish always"
   },
   "dependencies": {
     "electron-updater": "^6.6.2",
@@ -50,6 +52,27 @@
       "node_modules/sharp/**/*",
       "node_modules/@img/**/*"
     ],
+    "mac": {
+      "category": "public.app-category.photography",
+      "artifactName": "GridMode-${version}-mac-${arch}.${ext}",
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
     "win": {
       "signAndEditExecutable": false,
       "target": [
