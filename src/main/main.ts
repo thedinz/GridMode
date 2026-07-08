@@ -67,6 +67,9 @@ let settings: Settings = {};
 let cachedPhotos: PhotoAsset[] = [];
 let cachedSummary: LibrarySummary = emptySummary();
 let activeScan: Promise<LibrarySummary> | null = null;
+let updateDownloadInProgress = false;
+let promptedDownloadVersion: string | undefined;
+let promptedInstallVersion: string | undefined;
 
 const gotLock = app.requestSingleInstanceLock();
 
@@ -251,8 +254,7 @@ function registerIpc(): void {
       sendUpdateStatus(status);
       return status;
     }
-    sendUpdateStatus({ state: "downloading", message: "Downloading update..." });
-    await autoUpdater.downloadUpdate();
+    await downloadAvailableUpdate();
     return { state: "downloading" } satisfies UpdateStatus;
   });
   ipcMain.on("updates:install", () => {
@@ -680,6 +682,7 @@ function configureUpdates(): void {
       version: info.version,
       message: `GridMode ${info.version} is available.`
     });
+    void promptToDownloadUpdate(info.version);
   });
   autoUpdater.on("update-not-available", () => {
     sendUpdateStatus({
@@ -695,13 +698,16 @@ function configureUpdates(): void {
     });
   });
   autoUpdater.on("update-downloaded", (info) => {
+    updateDownloadInProgress = false;
     sendUpdateStatus({
       state: "downloaded",
       version: info.version,
       message: `GridMode ${info.version} is ready to install.`
     });
+    void promptToInstallUpdate(info.version);
   });
   autoUpdater.on("error", (error) => {
+    updateDownloadInProgress = false;
     sendUpdateStatus({
       state: "error",
       message: getErrorMessage(error)
@@ -735,4 +741,61 @@ async function checkForUpdates(): Promise<UpdateStatus> {
 
 function sendUpdateStatus(status: UpdateStatus): void {
   mainWindow?.webContents.send("updates:status", status);
+}
+
+async function promptToDownloadUpdate(version: string | undefined): Promise<void> {
+  if (!mainWindow || promptedDownloadVersion === version) {
+    return;
+  }
+
+  promptedDownloadVersion = version;
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Download", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "GridMode update",
+    message: version ? `GridMode ${version} is available.` : "A GridMode update is available.",
+    detail: "Download the update now?"
+  });
+
+  if (result.response === 0) {
+    await downloadAvailableUpdate();
+  }
+}
+
+async function downloadAvailableUpdate(): Promise<void> {
+  if (updateDownloadInProgress) {
+    return;
+  }
+
+  updateDownloadInProgress = true;
+  sendUpdateStatus({ state: "downloading", message: "Downloading update..." });
+  try {
+    await autoUpdater.downloadUpdate();
+  } catch (error) {
+    updateDownloadInProgress = false;
+    throw error;
+  }
+}
+
+async function promptToInstallUpdate(version: string | undefined): Promise<void> {
+  if (!mainWindow || promptedInstallVersion === version) {
+    return;
+  }
+
+  promptedInstallVersion = version;
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: "info",
+    buttons: ["Restart and install", "Later"],
+    defaultId: 0,
+    cancelId: 1,
+    title: "GridMode update ready",
+    message: version ? `GridMode ${version} is ready to install.` : "A GridMode update is ready to install.",
+    detail: "Restart GridMode to finish installing the update?"
+  });
+
+  if (result.response === 0) {
+    autoUpdater.quitAndInstall();
+  }
 }

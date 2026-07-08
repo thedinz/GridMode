@@ -3,10 +3,11 @@ import { defineConfig } from "vite";
 
 export default defineConfig({
   root: ".",
+  base: "./",
   plugins: [react()],
   build: {
     outDir: "dist/renderer",
-    emptyOutDir: false
+    emptyOutDir: true
   },
   server: {
     port: 5173,

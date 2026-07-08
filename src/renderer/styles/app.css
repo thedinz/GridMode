@@ -38,6 +38,13 @@ button {
   overflow: hidden;
 }
 
+.first-run-shell {
+  background:
+    linear-gradient(135deg, rgba(158, 209, 183, 0.1), transparent 34%),
+    linear-gradient(220deg, rgba(227, 181, 92, 0.08), transparent 42%),
+    linear-gradient(180deg, #20221c, #10110f 68%);
+}
+
 .top-bar {
   display: grid;
   flex: 0 0 64px;
@@ -175,7 +182,7 @@ button {
 
 .view-stack,
 .settings-view,
-.empty-library,
+.first-run-view,
 .quiet-state {
   padding: 28px;
 }
@@ -493,30 +500,55 @@ button {
   margin: 0;
 }
 
-.empty-library,
+.first-run-view,
 .quiet-state {
   display: grid;
   place-items: center;
-  min-height: calc(100vh - 64px);
+  min-height: 100%;
   text-align: center;
 }
 
-.empty-library > div,
+.first-run-view > div,
 .quiet-state {
   display: grid;
   justify-items: center;
-  gap: 18px;
+  gap: 22px;
 }
 
-.empty-library h1,
 .quiet-state h1 {
   margin: 0;
   font-size: 44px;
 }
 
-.empty-library svg,
 .quiet-state svg {
   color: #9ed1b7;
+}
+
+.gridmode-logo {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+}
+
+.gridmode-logo svg {
+  width: min(34vw, 220px);
+  min-width: 132px;
+  height: auto;
+  filter: drop-shadow(0 28px 60px rgba(0, 0, 0, 0.34));
+}
+
+.gridmode-logo span {
+  color: #fbf8ef;
+  font-size: 72px;
+  font-weight: 820;
+  line-height: 1;
+}
+
+.first-run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
 }
 
 .loading-overlay {
@@ -570,7 +602,7 @@ button {
 
   .view-stack,
   .settings-view,
-  .empty-library,
+  .first-run-view,
   .quiet-state {
     padding: 18px;
   }
@@ -598,6 +630,10 @@ button {
 
   .settings-metrics {
     grid-template-columns: 1fr;
+  }
+
+  .gridmode-logo span {
+    font-size: 48px;
   }
 
   .photo-view {

@@ -11,6 +11,7 @@ import {
   Sparkles
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { GridModeLogo } from "./components/GridModeLogo";
 import type {
   ExifRow,
   HomePayload,
@@ -127,7 +128,7 @@ export function App(): JSX.Element {
         if (settings.photoDirectory) {
           await loadHome();
         } else {
-          setView({ name: "settings" });
+          setView({ name: "home" });
           mergeState({ loading: false, statusText: undefined });
         }
       })
@@ -175,6 +176,16 @@ export function App(): JSX.Element {
   );
 
   const content = useMemo(() => {
+    if (!state.settings.photoDirectory) {
+      return (
+        <FirstRunView
+          onChooseRoot={chooseRoot}
+          updateStatus={updateStatus}
+          onCheckUpdates={() => void window.gridMode.updates.check()}
+        />
+      );
+    }
+
     if (view.name === "settings") {
       return (
         <SettingsView
@@ -184,14 +195,6 @@ export function App(): JSX.Element {
           onRescan={rescan}
           updateStatus={updateStatus}
           onCheckUpdates={() => void window.gridMode.updates.check()}
-        />
-      );
-    }
-
-    if (!state.settings.photoDirectory) {
-      return (
-        <EmptyLibrary
-          onChooseRoot={chooseRoot}
         />
       );
     }
@@ -259,16 +262,20 @@ export function App(): JSX.Element {
     view
   ]);
 
+  const hasPhotoDirectory = Boolean(state.settings.photoDirectory);
+
   return (
-    <div className="app-shell">
-      <TopBar
-        view={view}
-        summary={state.summary}
-        onHome={() => void openView({ name: "home" })}
-        onLibrary={() => void openView({ name: "library" })}
-        onSettings={() => setView({ name: "settings" })}
-        onRefresh={view.name === "home" ? () => void loadHome() : rescan}
-      />
+    <div className={hasPhotoDirectory ? "app-shell" : "app-shell first-run-shell"}>
+      {hasPhotoDirectory ? (
+        <TopBar
+          view={view}
+          summary={state.summary}
+          onHome={() => void openView({ name: "home" })}
+          onLibrary={() => void openView({ name: "library" })}
+          onSettings={() => setView({ name: "settings" })}
+          onRefresh={view.name === "home" ? () => void loadHome() : rescan}
+        />
+      ) : null}
       <UpdateBanner
         status={updateStatus}
       />
@@ -616,19 +623,36 @@ function SettingsView({
   );
 }
 
-function EmptyLibrary({ onChooseRoot }: { onChooseRoot: () => void }): JSX.Element {
+function FirstRunView({
+  onChooseRoot,
+  updateStatus,
+  onCheckUpdates
+}: {
+  onChooseRoot: () => void;
+  updateStatus: UpdateStatus;
+  onCheckUpdates: () => void;
+}): JSX.Element {
   return (
-    <section className="empty-library">
+    <section className="first-run-view">
       <div>
-        <Grid2X2 size={48} />
-        <h1>GridMode</h1>
-        <button
-          className="text-button primary"
-          onClick={onChooseRoot}
-        >
-          <FolderOpen size={18} />
-          <span>Choose photo folder</span>
-        </button>
+        <GridModeLogo />
+        <div className="first-run-actions">
+          <button
+            className="text-button primary"
+            onClick={onChooseRoot}
+          >
+            <FolderOpen size={18} />
+            <span>Choose photo folder</span>
+          </button>
+          <button
+            className="text-button"
+            onClick={onCheckUpdates}
+          >
+            <Download size={18} />
+            <span>Check updates</span>
+          </button>
+        </div>
+        {updateStatus.message ? <p className="settings-note">{updateStatus.message}</p> : null}
       </div>
     </section>
   );

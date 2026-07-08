@@ -1,6 +1,6 @@
 {
   "name": "gridmode",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "GridMode is a desktop photo viewer built around your folders, EXIF dates, and fast visual wandering.",
   "author": "thedinz",
   "license": "MIT",
