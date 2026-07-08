@@ -48,6 +48,19 @@ export interface LibrarySummary {
   warnings: string[];
 }
 
+export type ScanPhase = "idle" | "discovering" | "reading-metadata" | "complete" | "error";
+
+export interface ScanProgress {
+  phase: ScanPhase;
+  rootDir?: string;
+  foldersScanned?: number;
+  photosFound?: number;
+  photosProcessed?: number;
+  totalPhotos?: number;
+  currentPath?: string;
+  message?: string;
+}
+
 export interface HomePayload {
   summary: LibrarySummary;
   photos: PhotoAsset[];

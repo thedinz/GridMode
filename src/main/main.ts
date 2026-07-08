@@ -16,6 +16,7 @@ import type {
   PhotoAsset,
   PhotoDetails,
   PhotoLocation,
+  ScanProgress,
   Settings,
   UpdateStatus,
   YearPayload,
@@ -305,13 +306,48 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
 
 async function doScan(rootDir: string): Promise<LibrarySummary> {
   const warnings: string[] = [];
-  const files = await findPhotoFiles(rootDir, warnings);
+  const emitProgress = createScanProgressEmitter(rootDir);
+
+  emitProgress({
+    phase: "discovering",
+    foldersScanned: 0,
+    photosFound: 0,
+    message: "Finding photos"
+  });
+
+  const files = await findPhotoFiles(rootDir, warnings, (progress) => {
+    emitProgress({
+      phase: "discovering",
+      ...progress,
+      message: "Finding photos"
+    });
+  });
+
+  let processed = 0;
+  emitProgress({
+    phase: "reading-metadata",
+    photosFound: files.length,
+    photosProcessed: processed,
+    totalPhotos: files.length,
+    message: files.length === 0 ? "No supported photos found" : "Reading dates and metadata"
+  });
+
   const photos = await mapLimit(files, Math.max(2, Math.min(os.cpus().length, 6)), async (filePath) => {
     try {
       return await buildPhotoAsset(filePath);
     } catch (error) {
       warnings.push(`${path.basename(filePath)}: ${getErrorMessage(error)}`);
       return null;
+    } finally {
+      processed += 1;
+      emitProgress({
+        phase: "reading-metadata",
+        photosFound: files.length,
+        photosProcessed: processed,
+        totalPhotos: files.length,
+        currentPath: filePath,
+        message: "Reading dates and metadata"
+      });
     }
   });
 
@@ -319,12 +355,26 @@ async function doScan(rootDir: string): Promise<LibrarySummary> {
     .filter((photo): photo is PhotoAsset => photo !== null)
     .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
 
-  return buildSummary(rootDir, cachedPhotos, warnings);
+  const summary = buildSummary(rootDir, cachedPhotos, warnings);
+  emitProgress({
+    phase: "complete",
+    photosFound: files.length,
+    photosProcessed: processed,
+    totalPhotos: files.length,
+    message: `Indexed ${cachedPhotos.length.toLocaleString()} photos`
+  }, true);
+
+  return summary;
 }
 
-async function findPhotoFiles(rootDir: string, warnings: string[]): Promise<string[]> {
+async function findPhotoFiles(
+  rootDir: string,
+  warnings: string[],
+  onProgress: (progress: Pick<ScanProgress, "foldersScanned" | "photosFound" | "currentPath">) => void
+): Promise<string[]> {
   const found: string[] = [];
   const pending = [rootDir];
+  let foldersScanned = 0;
 
   while (pending.length > 0) {
     const current = pending.pop();
@@ -335,6 +385,7 @@ async function findPhotoFiles(rootDir: string, warnings: string[]): Promise<stri
     let entries: Dirent<string>[];
     try {
       entries = await fs.readdir(current, { withFileTypes: true, encoding: "utf8" });
+      foldersScanned += 1;
     } catch (error) {
       warnings.push(`${current}: ${getErrorMessage(error)}`);
       continue;
@@ -348,9 +399,32 @@ async function findPhotoFiles(rootDir: string, warnings: string[]): Promise<stri
         found.push(fullPath);
       }
     }
+
+    onProgress({
+      foldersScanned,
+      photosFound: found.length,
+      currentPath: current
+    });
   }
 
   return found;
+}
+
+function createScanProgressEmitter(rootDir: string): (progress: ScanProgress, immediate?: boolean) => void {
+  let lastSentAt = 0;
+
+  return (progress: ScanProgress, immediate = false) => {
+    const now = Date.now();
+    if (!immediate && now - lastSentAt < 250) {
+      return;
+    }
+
+    lastSentAt = now;
+    sendScanProgress({
+      rootDir,
+      ...progress
+    });
+  };
 }
 
 async function buildPhotoAsset(filePath: string): Promise<PhotoAsset> {
@@ -741,6 +815,10 @@ async function checkForUpdates(): Promise<UpdateStatus> {
 
 function sendUpdateStatus(status: UpdateStatus): void {
   mainWindow?.webContents.send("updates:status", status);
+}
+
+function sendScanProgress(progress: ScanProgress): void {
+  mainWindow?.webContents.send("scan:progress", progress);
 }
 
 async function promptToDownloadUpdate(version: string | undefined): Promise<void> {

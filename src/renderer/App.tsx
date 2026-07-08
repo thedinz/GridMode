@@ -20,6 +20,7 @@ import type {
   MonthSummary,
   PhotoAsset,
   PhotoDetails,
+  ScanProgress,
   Settings as AppSettings,
   UpdateStatus,
   YearPayload
@@ -40,6 +41,7 @@ interface AppState {
   year?: YearPayload;
   month?: MonthPayload;
   details?: PhotoDetails;
+  scanProgress?: ScanProgress;
   loading: boolean;
   statusText?: string;
 }
@@ -138,21 +140,37 @@ export function App(): JSX.Element {
         }
       });
 
-    const unsubscribe = window.gridMode.updates.onStatus(setUpdateStatus);
+    const unsubscribeUpdates = window.gridMode.updates.onStatus(setUpdateStatus);
+    const unsubscribeScan = window.gridMode.library.onProgress((progress) => {
+      mergeState({
+        scanProgress: progress,
+        statusText: progress.message
+      });
+    });
+
     return () => {
       mounted = false;
-      unsubscribe();
+      unsubscribeUpdates();
+      unsubscribeScan();
     };
   }, [loadHome, mergeState]);
 
   const chooseRoot = useCallback(async () => {
-    mergeState({ loading: true, statusText: "Scanning selected folder" });
+    mergeState({
+      loading: true,
+      statusText: "Scanning selected folder",
+      scanProgress: {
+        phase: "discovering",
+        message: "Waiting for folder selection"
+      }
+    });
     const { settings, summary } = await window.gridMode.settings.chooseRoot();
     mergeState({
       settings,
       summary,
       loading: false,
-      statusText: undefined
+      statusText: undefined,
+      scanProgress: undefined
     });
     if (settings.photoDirectory) {
       await openView({ name: "home" });
@@ -160,13 +178,21 @@ export function App(): JSX.Element {
   }, [mergeState, openView]);
 
   const rescan = useCallback(async () => {
-    mergeState({ loading: true, statusText: "Rescanning library" });
+    mergeState({
+      loading: true,
+      statusText: "Rescanning library",
+      scanProgress: {
+        phase: "discovering",
+        rootDir: state.settings.photoDirectory,
+        message: "Finding photos"
+      }
+    });
     const summary = await window.gridMode.library.scan(true);
-    mergeState({ summary, loading: false, statusText: undefined });
+    mergeState({ summary, loading: false, statusText: undefined, scanProgress: undefined });
     if (view.name === "home") {
       await loadHome();
     }
-  }, [loadHome, mergeState, view.name]);
+  }, [loadHome, mergeState, state.settings.photoDirectory, view.name]);
 
   const openPhoto = useCallback(
     (photo: PhotoAsset) => {
@@ -281,7 +307,10 @@ export function App(): JSX.Element {
       />
       <main className="app-main">
         {state.loading ? (
-          <LoadingOverlay label={state.statusText ?? "Loading"} />
+          <LoadingOverlay
+            label={state.statusText ?? "Loading"}
+            progress={state.scanProgress}
+          />
         ) : null}
         {content}
       </main>
@@ -799,13 +828,42 @@ function Metric({ label, value }: { label: string; value: string }): JSX.Element
   );
 }
 
-function LoadingOverlay({ label }: { label: string }): JSX.Element {
+function LoadingOverlay({ label, progress }: { label: string; progress?: ScanProgress }): JSX.Element {
+  const percent =
+    progress?.phase === "reading-metadata" && progress.totalPhotos
+      ? Math.round(((progress.photosProcessed ?? 0) / progress.totalPhotos) * 100)
+      : undefined;
+
   return (
     <div className="loading-overlay">
       <RefreshCcw size={22} />
-      <span>{label}</span>
+      <div>
+        <span>{label}</span>
+        {progress ? <small>{formatScanProgress(progress, percent)}</small> : null}
+      </div>
     </div>
   );
+}
+
+function formatScanProgress(progress: ScanProgress, percent: number | undefined): string {
+  if (progress.phase === "discovering") {
+    const folders = progress.foldersScanned ?? 0;
+    const photos = progress.photosFound ?? 0;
+    return `${folders.toLocaleString()} folders checked · ${photos.toLocaleString()} photos found`;
+  }
+
+  if (progress.phase === "reading-metadata") {
+    const processed = progress.photosProcessed ?? 0;
+    const total = progress.totalPhotos ?? progress.photosFound ?? 0;
+    const suffix = percent === undefined ? "" : ` · ${percent}%`;
+    return `${processed.toLocaleString()} / ${total.toLocaleString()} photos processed${suffix}`;
+  }
+
+  if (progress.phase === "complete") {
+    return progress.message ?? "Scan complete";
+  }
+
+  return progress.currentPath ?? "";
 }
 
 function monthName(month: number): string {

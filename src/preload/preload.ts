@@ -4,6 +4,7 @@ import type {
   LibrarySummary,
   MonthPayload,
   PhotoDetails,
+  ScanProgress,
   Settings,
   UpdateStatus,
   YearPayload
@@ -21,7 +22,12 @@ const api = {
     getYears: (): Promise<LibrarySummary> => ipcRenderer.invoke("library:get-years"),
     getYear: (year: number): Promise<YearPayload> => ipcRenderer.invoke("library:get-year", year),
     getMonth: (year: number, month: number): Promise<MonthPayload> =>
-      ipcRenderer.invoke("library:get-month", year, month)
+      ipcRenderer.invoke("library:get-month", year, month),
+    onProgress: (callback: (progress: ScanProgress) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: ScanProgress) => callback(progress);
+      ipcRenderer.on("scan:progress", listener);
+      return () => ipcRenderer.off("scan:progress", listener);
+    }
   },
   photo: {
     getDetails: (photoPath: string): Promise<PhotoDetails> => ipcRenderer.invoke("photo:get-details", photoPath)
