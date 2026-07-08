@@ -494,6 +494,7 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
 
   const canDownload = status.state === "available";
   const canInstall = status.state === "downloaded";
+  const downloadLabel = status.manualDownload ? "Open download" : "Download";
 
   return (
     <aside className={`update-banner ${status.state}`}>
@@ -507,7 +508,7 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
           onClick={() => void window.gridMode.updates.download()}
         >
           <Download size={16} />
-          <span>Download</span>
+          <span>{downloadLabel}</span>
         </button>
       ) : null}
       {canInstall ? (

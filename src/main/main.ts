@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import crypto from "node:crypto";
 import type { Dirent } from "node:fs";
@@ -57,6 +57,7 @@ const thumbnailSize = 420;
 const displayMaxDimension = 3840;
 const imageCacheVersion = "v1";
 const libraryIndexVersion = 1;
+const githubLatestReleaseUrl = "https://api.github.com/repos/thedinz/GridMode/releases/latest";
 
 interface PhotoFileSnapshot {
   path: string;
@@ -117,6 +118,7 @@ let activeScan: Promise<LibrarySummary> | null = null;
 let updateDownloadInProgress = false;
 let promptedDownloadVersion: string | undefined;
 let promptedInstallVersion: string | undefined;
+let manualMacUpdateStatus: UpdateStatus | undefined;
 let activeImageJobs = 0;
 const imageJobLimit = Math.max(2, Math.min(os.cpus().length - 1, 4));
 const queuedImageJobs: Array<() => void> = [];
@@ -407,11 +409,14 @@ function registerIpc(): void {
       sendUpdateStatus(status);
       return status;
     }
+    if (process.platform === "darwin") {
+      return openManualMacUpdateDownload();
+    }
     await downloadAvailableUpdate();
     return { state: "downloading" } satisfies UpdateStatus;
   });
   ipcMain.on("updates:install", () => {
-    if (app.isPackaged) {
+    if (app.isPackaged && process.platform !== "darwin") {
       autoUpdater.quitAndInstall();
     }
   });
@@ -1394,6 +1399,10 @@ async function checkForUpdates(): Promise<UpdateStatus> {
     return status;
   }
 
+  if (process.platform === "darwin") {
+    return checkForManualMacUpdate();
+  }
+
   try {
     sendUpdateStatus({ state: "checking", message: "Checking for updates..." });
     await autoUpdater.checkForUpdates();
@@ -1406,6 +1415,135 @@ async function checkForUpdates(): Promise<UpdateStatus> {
     sendUpdateStatus(status);
     return status;
   }
+}
+
+async function checkForManualMacUpdate(): Promise<UpdateStatus> {
+  try {
+    sendUpdateStatus({ state: "checking", message: "Checking for updates..." });
+    const response = await net.fetch(githubLatestReleaseUrl, {
+      headers: {
+        accept: "application/vnd.github+json",
+        "user-agent": `GridMode/${app.getVersion()}`
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`GitHub returned ${response.status}`);
+    }
+
+    const release = (await response.json()) as GitHubRelease;
+    const version = normalizeReleaseVersion(release);
+    if (!version || !isNewerVersion(version, app.getVersion())) {
+      const status: UpdateStatus = {
+        state: "not-available",
+        message: "GridMode is up to date."
+      };
+      manualMacUpdateStatus = undefined;
+      sendUpdateStatus(status);
+      return status;
+    }
+
+    const downloadUrl = findMacDownloadUrl(release) ?? getString(release.html_url);
+    const status: UpdateStatus = {
+      state: "available",
+      version,
+      downloadUrl,
+      manualDownload: true,
+      message: downloadUrl
+        ? `GridMode ${version} is available. Download the Mac installer to update manually.`
+        : `GridMode ${version} is available. Open GitHub Releases to download it.`
+    };
+    manualMacUpdateStatus = status;
+    sendUpdateStatus(status);
+    return status;
+  } catch (error) {
+    const status: UpdateStatus = {
+      state: "error",
+      message: getErrorMessage(error)
+    };
+    sendUpdateStatus(status);
+    return status;
+  }
+}
+
+async function openManualMacUpdateDownload(): Promise<UpdateStatus> {
+  const status = manualMacUpdateStatus ?? await checkForManualMacUpdate();
+  if (status.state !== "available" || !status.downloadUrl) {
+    return status;
+  }
+
+  await shell.openExternal(status.downloadUrl);
+  const nextStatus: UpdateStatus = {
+    ...status,
+    message: status.version
+      ? `Opening GridMode ${status.version} download...`
+      : "Opening GridMode download..."
+  };
+  sendUpdateStatus(nextStatus);
+  return nextStatus;
+}
+
+interface GitHubReleaseAsset {
+  name?: unknown;
+  browser_download_url?: unknown;
+}
+
+interface GitHubRelease {
+  tag_name?: unknown;
+  name?: unknown;
+  html_url?: unknown;
+  assets?: unknown;
+}
+
+function normalizeReleaseVersion(release: GitHubRelease): string | undefined {
+  const value = getString(release.tag_name) ?? getString(release.name);
+  return value?.replace(/^v/i, "");
+}
+
+function findMacDownloadUrl(release: GitHubRelease): string | undefined {
+  if (!Array.isArray(release.assets)) {
+    return undefined;
+  }
+
+  const assets = release.assets.filter(isGitHubReleaseAsset);
+  const dmg = assets.find((asset) => {
+    const name = getString(asset.name)?.toLowerCase();
+    return Boolean(name?.includes("mac") && name.endsWith(".dmg"));
+  });
+  return getString(dmg?.browser_download_url);
+}
+
+function isGitHubReleaseAsset(value: unknown): value is GitHubReleaseAsset {
+  return typeof value === "object" && value !== null;
+}
+
+function isNewerVersion(candidate: string, current: string): boolean {
+  const candidateParts = parseVersionParts(candidate);
+  const currentParts = parseVersionParts(current);
+  const length = Math.max(candidateParts.length, currentParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const left = candidateParts[index] ?? 0;
+    const right = currentParts[index] ?? 0;
+    if (left > right) {
+      return true;
+    }
+    if (left < right) {
+      return false;
+    }
+  }
+  return false;
+}
+
+function parseVersionParts(value: string): number[] {
+  return value
+    .replace(/^v/i, "")
+    .split(/[.-]/)
+    .map((part) => Number.parseInt(part, 10))
+    .filter((part) => Number.isFinite(part));
+}
+
+function getString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }
 
 function sendUpdateStatus(status: UpdateStatus): void {

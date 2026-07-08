@@ -113,4 +113,6 @@ export interface UpdateStatus {
   version?: string;
   message?: string;
   percent?: number;
+  downloadUrl?: string;
+  manualDownload?: boolean;
 }

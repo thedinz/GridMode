@@ -38,12 +38,12 @@ The installer is written to `release/`.
 pnpm dist:mac
 ```
 
-The DMG, ZIP, blockmaps, and `latest-mac.yml` are written to `release/`. The ZIP is required for macOS auto-updates.
+The unsigned DMG, ZIP, blockmaps, and `latest-mac.yml` are written to `release/`. The DMG is uploaded to GitHub Releases for manual macOS downloads.
 
 ## Updates
 
-Installed builds check GitHub releases for updates on startup and from the Settings page. The included GitHub Actions workflow publishes a new Windows release for every push to `main` by assigning the build a run-based version such as `0.1.42`. It also publishes signed macOS DMG/ZIP update assets when the repository has `CSC_LINK` and `CSC_KEY_PASSWORD` signing secrets configured.
+Installed builds check GitHub releases for updates on startup and from the Settings page. The included GitHub Actions workflow publishes a new Windows release for every push to `main` by assigning the build a run-based version such as `0.1.42`.
 
-macOS auto-updates require a signed app. For notarized public Mac releases, also configure `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` secrets.
+Windows builds use automatic update downloads and installs. macOS builds are unsigned, so they show an update notice with a GitHub Releases download link instead of installing updates automatically.
 
 Local unsigned installers are fine for early testing. Production-ready macOS builds need Developer ID signing and notarization, and a production-ready Windows build should eventually add code signing.
