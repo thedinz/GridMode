@@ -1,6 +1,7 @@
 import {
   CalendarDays,
   CheckCircle2,
+  ChevronLeft,
   Download,
   FolderOpen,
   FolderX,
@@ -345,6 +346,7 @@ export function App(): JSX.Element {
       return (
         <YearView
           payload={state.year}
+          onBack={() => void openView({ name: "library" })}
           onOpenMonth={(month) => void openView({ name: "month", year: view.year, month })}
           onOpenPhoto={openPhoto}
         />
@@ -355,6 +357,7 @@ export function App(): JSX.Element {
       return (
         <MonthView
           payload={state.month}
+          onBack={() => void openView({ name: "year", year: view.year })}
           onOpenPhoto={openPhoto}
         />
       );
@@ -613,10 +616,12 @@ function LibraryView({
 
 function YearView({
   payload,
+  onBack,
   onOpenMonth,
   onOpenPhoto
 }: {
   payload?: YearPayload;
+  onBack: () => void;
   onOpenMonth: (month: number) => void;
   onOpenPhoto: (photo: PhotoAsset) => void;
 }): JSX.Element {
@@ -627,6 +632,13 @@ function YearView({
           <p>Year</p>
           <h1>{payload?.year ?? ""}</h1>
         </div>
+        <button
+          className="text-button"
+          onClick={onBack}
+        >
+          <ChevronLeft size={16} />
+          <span>Library</span>
+        </button>
       </div>
       <div className="section-list">
         {(payload?.months ?? []).map((month) => (
@@ -646,9 +658,11 @@ function YearView({
 
 function MonthView({
   payload,
+  onBack,
   onOpenPhoto
 }: {
   payload?: MonthPayload;
+  onBack: () => void;
   onOpenPhoto: (photo: PhotoAsset) => void;
 }): JSX.Element {
   return (
@@ -658,6 +672,13 @@ function MonthView({
           <p>{payload?.year}</p>
           <h1>{payload?.monthName}</h1>
         </div>
+        <button
+          className="text-button"
+          onClick={onBack}
+        >
+          <ChevronLeft size={16} />
+          <span>{payload?.year ? String(payload.year) : "Year"}</span>
+        </button>
       </div>
       <PhotoGrid
         photos={payload?.photos ?? []}
