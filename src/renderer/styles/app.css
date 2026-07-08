@@ -496,6 +496,60 @@ button {
   gap: 10px;
 }
 
+.settings-section {
+  display: grid;
+  gap: 14px;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.section-title-row p {
+  margin: 0 0 4px;
+  color: #9ed1b7;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.section-title-row h2 {
+  margin: 0;
+  color: #fbf8ef;
+  font-size: 20px;
+}
+
+.exclusion-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.exclusion-list li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 8px 0 14px;
+  border: 1px solid rgba(244, 240, 231, 0.09);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.exclusion-list span {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(244, 240, 231, 0.76);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-note {
   margin: 0;
 }

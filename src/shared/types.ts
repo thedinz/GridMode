@@ -1,6 +1,12 @@
 export interface Settings {
   photoDirectory?: string;
+  excludedDirectories?: string[];
   lastScanAt?: string;
+}
+
+export interface SettingsPayload {
+  settings: Settings;
+  summary: LibrarySummary;
 }
 
 export interface PhotoLocation {
@@ -60,6 +66,7 @@ export interface ScanProgress {
   photosReused?: number;
   photosChanged?: number;
   photosRemoved?: number;
+  foldersExcluded?: number;
   totalPhotos?: number;
   currentPath?: string;
   message?: string;

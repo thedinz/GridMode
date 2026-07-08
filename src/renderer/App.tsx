@@ -3,12 +3,14 @@ import {
   CheckCircle2,
   Download,
   FolderOpen,
+  FolderX,
   Grid2X2,
   Image,
   Library,
   RefreshCcw,
   Settings,
-  Sparkles
+  Sparkles,
+  X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { GridModeLogo } from "./components/GridModeLogo";
@@ -237,6 +239,46 @@ export function App(): JSX.Element {
     }
   }, [mergeState, openView]);
 
+  const chooseExclusion = useCallback(async () => {
+    mergeState({
+      loading: true,
+      statusText: "Updating exclusions",
+      scanProgress: {
+        phase: "discovering",
+        rootDir: state.settings.photoDirectory,
+        message: "Waiting for folder selection"
+      }
+    });
+    const { settings, summary } = await window.gridMode.settings.chooseExclusion();
+    mergeState({
+      settings,
+      summary,
+      loading: false,
+      statusText: undefined,
+      scanProgress: undefined
+    });
+  }, [mergeState, state.settings.photoDirectory]);
+
+  const removeExclusion = useCallback(async (excludedPath: string) => {
+    mergeState({
+      loading: true,
+      statusText: "Updating exclusions",
+      scanProgress: {
+        phase: "discovering",
+        rootDir: state.settings.photoDirectory,
+        message: "Checking folders for changes"
+      }
+    });
+    const { settings, summary } = await window.gridMode.settings.removeExclusion(excludedPath);
+    mergeState({
+      settings,
+      summary,
+      loading: false,
+      statusText: undefined,
+      scanProgress: undefined
+    });
+  }, [mergeState, state.settings.photoDirectory]);
+
   const rescan = useCallback(async () => {
     mergeState({
       loading: true,
@@ -280,6 +322,8 @@ export function App(): JSX.Element {
           settings={state.settings}
           summary={state.summary}
           onChooseRoot={chooseRoot}
+          onChooseExclusion={chooseExclusion}
+          onRemoveExclusion={removeExclusion}
           onRescan={rescan}
           updateStatus={updateStatus}
           onCheckUpdates={() => void window.gridMode.updates.check()}
@@ -337,9 +381,11 @@ export function App(): JSX.Element {
     );
   }, [
     chooseRoot,
+    chooseExclusion,
     loadHome,
     openPhoto,
     openView,
+    removeExclusion,
     rescan,
     state.details,
     state.homePhotos,
@@ -661,6 +707,8 @@ function SettingsView({
   summary,
   updateStatus,
   onChooseRoot,
+  onChooseExclusion,
+  onRemoveExclusion,
   onRescan,
   onCheckUpdates
 }: {
@@ -668,9 +716,13 @@ function SettingsView({
   summary: LibrarySummary;
   updateStatus: UpdateStatus;
   onChooseRoot: () => void;
+  onChooseExclusion: () => void;
+  onRemoveExclusion: (excludedPath: string) => void;
   onRescan: () => void;
   onCheckUpdates: () => void;
 }): JSX.Element {
+  const excludedDirectories = settings.excludedDirectories ?? [];
+
   return (
     <section className="settings-view">
       <div className="settings-panel">
@@ -703,6 +755,39 @@ function SettingsView({
             label="Scanned"
             value={summary.lastScanAt ? formatDate(summary.lastScanAt) : "Never"}
           />
+        </div>
+        <div className="settings-section">
+          <div className="section-title-row">
+            <div>
+              <p>Exclusions</p>
+              <h2>Excluded folders</h2>
+            </div>
+            <button
+              className="text-button"
+              onClick={onChooseExclusion}
+            >
+              <FolderX size={16} />
+              <span>Add</span>
+            </button>
+          </div>
+          {excludedDirectories.length > 0 ? (
+            <ul className="exclusion-list">
+              {excludedDirectories.map((excludedPath) => (
+                <li key={excludedPath}>
+                  <span>{formatExcludedDirectory(settings.photoDirectory, excludedPath)}</span>
+                  <button
+                    className="icon-button"
+                    onClick={() => onRemoveExclusion(excludedPath)}
+                    title="Remove exclusion"
+                  >
+                    <X size={16} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="settings-note">No folders excluded</p>
+          )}
         </div>
         <div className="settings-actions">
           <button
@@ -924,7 +1009,9 @@ function formatScanProgress(progress: ScanProgress, percent: number | undefined)
   if (progress.phase === "discovering") {
     const folders = progress.foldersScanned ?? 0;
     const photos = progress.photosFound ?? 0;
-    return `${folders.toLocaleString()} folders checked - ${photos.toLocaleString()} photos found`;
+    const excluded = progress.foldersExcluded ?? 0;
+    const excludedText = excluded > 0 ? ` - ${excluded.toLocaleString()} excluded` : "";
+    return `${folders.toLocaleString()} folders checked - ${photos.toLocaleString()} photos found${excludedText}`;
   }
 
   if (progress.phase === "reading-metadata") {
@@ -956,6 +1043,25 @@ function formatDate(value: string): string {
     month: "short",
     day: "numeric"
   });
+}
+
+function formatExcludedDirectory(rootDir: string | undefined, excludedPath: string): string {
+  if (!rootDir) {
+    return excludedPath;
+  }
+
+  const normalizedRoot = rootDir.replace(/[\\/]+$/, "");
+  const lowerRoot = normalizedRoot.toLowerCase();
+  const lowerPath = excludedPath.toLowerCase();
+  if (lowerPath === lowerRoot) {
+    return excludedPath;
+  }
+
+  if (lowerPath.startsWith(`${lowerRoot}\\`) || lowerPath.startsWith(`${lowerRoot}/`)) {
+    return excludedPath.slice(normalizedRoot.length + 1);
+  }
+
+  return excludedPath;
 }
 
 function formatBytes(bytes: number): string {

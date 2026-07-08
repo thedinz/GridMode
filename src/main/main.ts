@@ -19,6 +19,7 @@ import type {
   PhotoLocation,
   ScanProgress,
   Settings,
+  SettingsPayload,
   UpdateStatus,
   YearPayload,
   YearSummary
@@ -73,6 +74,7 @@ interface LibraryIndexEntry {
 interface LibraryIndexFile {
   version: number;
   rootDir: string;
+  excludedDirectories?: string[];
   scannedAt: string;
   warnings?: string[];
   photos: LibraryIndexEntry[];
@@ -142,7 +144,7 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   settings = await readSettings();
-  await loadCachedLibrary(settings.photoDirectory);
+  await loadCachedLibrary(settings.photoDirectory, settings.excludedDirectories ?? []);
   registerPhotoProtocol();
   registerIpc();
   configureUpdates();
@@ -205,6 +207,10 @@ function registerPhotoProtocol(): void {
       return new Response("Photo is outside the configured library.", { status: 403 });
     }
 
+    if (isPathExcluded(filePath, settings.excludedDirectories ?? [])) {
+      return new Response("Photo is in an excluded folder.", { status: 403 });
+    }
+
     try {
       await fs.access(filePath);
       if (variant === "thumb") {
@@ -229,12 +235,12 @@ function registerPhotoProtocol(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle("settings:get", async () => ({
+  ipcMain.handle("settings:get", async (): Promise<SettingsPayload> => ({
     settings,
     summary: cachedSummary
   }));
 
-  ipcMain.handle("settings:choose-root", async () => {
+  ipcMain.handle("settings:choose-root", async (): Promise<SettingsPayload> => {
     const result = await dialog.showOpenDialog({
       title: "Choose a photo folder",
       properties: ["openDirectory"]
@@ -248,7 +254,8 @@ function registerIpc(): void {
     }
 
     settings = {
-      photoDirectory: result.filePaths[0]
+      photoDirectory: path.resolve(result.filePaths[0]),
+      excludedDirectories: []
     };
     cachedPhotos = [];
     cachedPhotoStats = new Map();
@@ -256,6 +263,79 @@ function registerIpc(): void {
     hasLibraryIndex = false;
     await writeSettings(settings);
     const summary = await scanLibrary(true);
+
+    return {
+      settings,
+      summary
+    };
+  });
+
+  ipcMain.handle("settings:choose-exclusion", async (): Promise<SettingsPayload> => {
+    if (!settings.photoDirectory) {
+      return {
+        settings,
+        summary: cachedSummary
+      };
+    }
+
+    const result = await dialog.showOpenDialog({
+      title: "Exclude a folder",
+      defaultPath: settings.photoDirectory,
+      properties: ["openDirectory"]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return {
+        settings,
+        summary: cachedSummary
+      };
+    }
+
+    const selectedPath = path.resolve(result.filePaths[0]);
+    if (!isValidExcludedDirectory(settings.photoDirectory, selectedPath)) {
+      const message = {
+        type: "warning",
+        title: "Folder cannot be excluded",
+        message: "Choose a subfolder inside the selected photo directory."
+      } as const;
+      if (mainWindow) {
+        await dialog.showMessageBox(mainWindow, message);
+      } else {
+        await dialog.showMessageBox(message);
+      }
+      return {
+        settings,
+        summary: cachedSummary
+      };
+    }
+
+    settings = {
+      ...settings,
+      excludedDirectories: addExcludedDirectory(settings.photoDirectory, settings.excludedDirectories ?? [], selectedPath)
+    };
+    await writeSettings(settings);
+    const summary = await scanLibrary(false);
+
+    return {
+      settings,
+      summary
+    };
+  });
+
+  ipcMain.handle("settings:remove-exclusion", async (_event, excludedPath: string): Promise<SettingsPayload> => {
+    if (!settings.photoDirectory) {
+      return {
+        settings,
+        summary: cachedSummary
+      };
+    }
+
+    settings = {
+      ...settings,
+      excludedDirectories: removeExcludedDirectory(settings.excludedDirectories ?? [], excludedPath)
+    };
+    await writeSettings(settings);
+    const summary = await scanLibrary(false);
 
     return {
       settings,
@@ -389,16 +469,18 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
 
 async function doScan(rootDir: string, force: boolean): Promise<LibrarySummary> {
   const warnings: string[] = [];
+  const excludedDirectories = normalizeExcludedDirectories(rootDir, settings.excludedDirectories ?? []);
   const emitProgress = createScanProgressEmitter(rootDir);
 
   emitProgress({
     phase: "discovering",
     foldersScanned: 0,
     photosFound: 0,
+    foldersExcluded: 0,
     message: hasLibraryIndex && !force ? "Checking folders for changes" : "Finding photos"
   });
 
-  const files = await findPhotoFiles(rootDir, warnings, (progress) => {
+  const files = await findPhotoFiles(rootDir, warnings, excludedDirectories, (progress) => {
     emitProgress({
       phase: "discovering",
       ...progress,
@@ -503,15 +585,28 @@ async function doScan(rootDir: string, force: boolean): Promise<LibrarySummary> 
 async function findPhotoFiles(
   rootDir: string,
   warnings: string[],
-  onProgress: (progress: Pick<ScanProgress, "foldersScanned" | "photosFound" | "currentPath">) => void
+  excludedDirectories: string[],
+  onProgress: (progress: Pick<ScanProgress, "foldersScanned" | "photosFound" | "foldersExcluded" | "currentPath">) => void
 ): Promise<PhotoFileSnapshot[]> {
   const found: PhotoFileSnapshot[] = [];
   const pending = [rootDir];
   let foldersScanned = 0;
+  let foldersExcluded = 0;
 
   while (pending.length > 0) {
     const current = pending.pop();
     if (!current) {
+      continue;
+    }
+
+    if (!sameDirectory(current, rootDir) && isPathExcluded(current, excludedDirectories)) {
+      foldersExcluded += 1;
+      onProgress({
+        foldersScanned,
+        photosFound: found.length,
+        foldersExcluded,
+        currentPath: current
+      });
       continue;
     }
 
@@ -527,7 +622,11 @@ async function findPhotoFiles(
     for (const entry of entries) {
       const fullPath = path.join(current, entry.name);
       if (entry.isDirectory()) {
-        pending.push(fullPath);
+        if (isPathExcluded(fullPath, excludedDirectories)) {
+          foldersExcluded += 1;
+        } else {
+          pending.push(fullPath);
+        }
       } else if (entry.isFile() && supportedExtensions.has(path.extname(entry.name).toLowerCase())) {
         try {
           found.push(await readPhotoFileSnapshot(fullPath));
@@ -540,6 +639,7 @@ async function findPhotoFiles(
     onProgress({
       foldersScanned,
       photosFound: found.length,
+      foldersExcluded,
       currentPath: current
     });
   }
@@ -964,6 +1064,45 @@ function isInsideDirectory(rootDir: string, filePath: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function isValidExcludedDirectory(rootDir: string, candidatePath: string): boolean {
+  return isInsideDirectory(rootDir, candidatePath) && !sameDirectory(rootDir, candidatePath);
+}
+
+function normalizeExcludedDirectories(rootDir: string | undefined, excludedDirectories: string[] = []): string[] {
+  if (!rootDir) {
+    return [];
+  }
+
+  const rootPath = path.resolve(rootDir);
+  const normalized = excludedDirectories
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => path.resolve(item))
+    .filter((item) => isValidExcludedDirectory(rootPath, item))
+    .sort((a, b) => a.length - b.length || comparePath(a, b));
+
+  const compacted: string[] = [];
+  for (const item of normalized) {
+    if (!compacted.some((existing) => sameDirectory(existing, item) || isInsideDirectory(existing, item))) {
+      compacted.push(item);
+    }
+  }
+
+  return compacted;
+}
+
+function addExcludedDirectory(rootDir: string, existing: string[], candidatePath: string): string[] {
+  return normalizeExcludedDirectories(rootDir, [...existing, candidatePath]);
+}
+
+function removeExcludedDirectory(existing: string[], candidatePath: string): string[] {
+  const normalizedCandidate = path.resolve(candidatePath);
+  return existing.filter((item) => !sameDirectory(path.resolve(item), normalizedCandidate));
+}
+
+function isPathExcluded(filePath: string, excludedDirectories: string[]): boolean {
+  return excludedDirectories.some((excludedDirectory) => isInsideDirectory(excludedDirectory, filePath));
+}
+
 function normalizeDate(value: unknown): Date | undefined {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return value;
@@ -1055,7 +1194,7 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function loadCachedLibrary(rootDir: string | undefined): Promise<void> {
+async function loadCachedLibrary(rootDir: string | undefined, excludedDirectories: string[] = []): Promise<void> {
   cachedPhotos = [];
   cachedPhotoStats = new Map();
   cachedSummary = emptySummary(rootDir);
@@ -1067,7 +1206,7 @@ async function loadCachedLibrary(rootDir: string | undefined): Promise<void> {
 
   try {
     const index = parseJson(await fs.readFile(libraryIndexPath(), "utf8")) as LibraryIndexFile;
-    if (!isUsableLibraryIndex(index, rootDir)) {
+    if (!isUsableLibraryIndex(index, rootDir, excludedDirectories)) {
       return;
     }
 
@@ -1094,6 +1233,7 @@ async function writeLibraryIndex(rootDir: string, summary: LibrarySummary): Prom
   const index: LibraryIndexFile = {
     version: libraryIndexVersion,
     rootDir,
+    excludedDirectories: normalizeExcludedDirectories(rootDir, settings.excludedDirectories ?? []),
     scannedAt: summary.lastScanAt ?? new Date().toISOString(),
     warnings: summary.warnings,
     photos: cachedPhotos.flatMap((photo) => {
@@ -1118,10 +1258,14 @@ async function writeLibraryIndex(rootDir: string, summary: LibrarySummary): Prom
   await fs.rename(temp, target);
 }
 
-function isUsableLibraryIndex(index: LibraryIndexFile, rootDir: string): boolean {
+function isUsableLibraryIndex(index: LibraryIndexFile, rootDir: string, excludedDirectories: string[]): boolean {
   return (
     index.version === libraryIndexVersion &&
     sameDirectory(index.rootDir, rootDir) &&
+    sameDirectories(
+      normalizeExcludedDirectories(rootDir, index.excludedDirectories ?? []),
+      normalizeExcludedDirectories(rootDir, excludedDirectories)
+    ) &&
     typeof index.scannedAt === "string" &&
     Array.isArray(index.photos)
   );
@@ -1144,6 +1288,16 @@ function sameDirectory(left: string, right: string): boolean {
   return process.platform === "win32" ? first.toLowerCase() === second.toLowerCase() : first === second;
 }
 
+function comparePath(left: string, right: string): number {
+  const first = process.platform === "win32" ? left.toLowerCase() : left;
+  const second = process.platform === "win32" ? right.toLowerCase() : right;
+  return first.localeCompare(second);
+}
+
+function sameDirectories(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((item, index) => sameDirectory(item, right[index]));
+}
+
 function settingsPath(): string {
   return path.join(app.getPath("userData"), "settings.json");
 }
@@ -1155,10 +1309,23 @@ function libraryIndexPath(): string {
 async function readSettings(): Promise<Settings> {
   try {
     const text = await fs.readFile(settingsPath(), "utf8");
-    return parseJson(text) as Settings;
+    return normalizeSettings(parseJson(text) as Settings);
   } catch {
     return {};
   }
+}
+
+function normalizeSettings(rawSettings: Settings): Settings {
+  const photoDirectory =
+    typeof rawSettings.photoDirectory === "string" && rawSettings.photoDirectory.trim().length > 0
+      ? path.resolve(rawSettings.photoDirectory)
+      : undefined;
+
+  return {
+    ...rawSettings,
+    photoDirectory,
+    excludedDirectories: normalizeExcludedDirectories(photoDirectory, rawSettings.excludedDirectories ?? [])
+  };
 }
 
 function parseJson(text: string): unknown {
@@ -1166,8 +1333,9 @@ function parseJson(text: string): unknown {
 }
 
 async function writeSettings(nextSettings: Settings): Promise<void> {
+  const normalized = normalizeSettings(nextSettings);
   await fs.mkdir(app.getPath("userData"), { recursive: true });
-  await fs.writeFile(settingsPath(), JSON.stringify(nextSettings, null, 2), "utf8");
+  await fs.writeFile(settingsPath(), JSON.stringify(normalized, null, 2), "utf8");
 }
 
 function configureUpdates(): void {

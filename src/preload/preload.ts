@@ -5,16 +5,18 @@ import type {
   MonthPayload,
   PhotoDetails,
   ScanProgress,
-  Settings,
+  SettingsPayload,
   UpdateStatus,
   YearPayload
 } from "../shared/types";
 
 const api = {
   settings: {
-    get: (): Promise<{ settings: Settings; summary: LibrarySummary }> => ipcRenderer.invoke("settings:get"),
-    chooseRoot: (): Promise<{ settings: Settings; summary: LibrarySummary }> =>
-      ipcRenderer.invoke("settings:choose-root")
+    get: (): Promise<SettingsPayload> => ipcRenderer.invoke("settings:get"),
+    chooseRoot: (): Promise<SettingsPayload> => ipcRenderer.invoke("settings:choose-root"),
+    chooseExclusion: (): Promise<SettingsPayload> => ipcRenderer.invoke("settings:choose-exclusion"),
+    removeExclusion: (excludedPath: string): Promise<SettingsPayload> =>
+      ipcRenderer.invoke("settings:remove-exclusion", excludedPath)
   },
   library: {
     scan: (force = false): Promise<LibrarySummary> => ipcRenderer.invoke("library:scan", force),

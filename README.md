@@ -9,7 +9,7 @@ GridMode is a Windows-first desktop photo viewer for people who already like the
 - Cached thumbnail rendering for faster grids, including TIFF/TIF support through a native image pipeline.
 - Persistent library indexing so startup can reuse cached metadata and only process new or modified photos.
 - Library view grouped by year, then month, using EXIF dates with file modified time as a fallback.
-- Settings view for choosing and rescanning the photo directory.
+- Settings view for choosing, rescanning, and excluding folders from the photo directory.
 - Windows NSIS installer built with Electron Builder.
 - Auto-update plumbing through GitHub releases.
 
