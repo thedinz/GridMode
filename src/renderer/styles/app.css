@@ -441,26 +441,6 @@ button {
   padding-top: 24px;
 }
 
-.setting-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 14px;
-  min-height: 58px;
-  padding: 0 16px;
-  border: 1px solid rgba(244, 240, 231, 0.09);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.045);
-}
-
-.setting-row span {
-  min-width: 0;
-  overflow: hidden;
-  color: rgba(244, 240, 231, 0.75);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .settings-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -522,7 +502,7 @@ button {
   font-size: 20px;
 }
 
-.exclusion-list {
+.path-list {
   display: grid;
   gap: 8px;
   margin: 0;
@@ -530,7 +510,7 @@ button {
   list-style: none;
 }
 
-.exclusion-list li {
+.path-list li {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
@@ -542,7 +522,7 @@ button {
   background: rgba(255, 255, 255, 0.035);
 }
 
-.exclusion-list span {
+.path-list span {
   min-width: 0;
   overflow: hidden;
   color: rgba(244, 240, 231, 0.76);

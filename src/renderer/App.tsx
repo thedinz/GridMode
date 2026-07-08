@@ -835,23 +835,13 @@ function SettingsView({
         <div className="view-heading">
           <div>
             <p>Settings</p>
-            <h1>Photo directory</h1>
+            <h1>Photo locations</h1>
           </div>
-        </div>
-        <div className="setting-row">
-          <span>{settings.photoDirectory ?? "No folder selected"}</span>
-          <button
-            className="text-button"
-            onClick={onChooseRoot}
-          >
-            <FolderOpen size={16} />
-            <span>Choose</span>
-          </button>
         </div>
         <div className="settings-section">
           <div className="section-title-row">
             <div>
-              <p>Locations</p>
+              <p>Library</p>
               <h2>Photo locations</h2>
             </div>
             <button
@@ -863,17 +853,27 @@ function SettingsView({
             </button>
           </div>
           {photoDirectories.length > 0 ? (
-            <ul className="exclusion-list">
+            <ul className="path-list">
               {photoDirectories.map((photoDirectory, index) => (
                 <li key={photoDirectory}>
                   <span>{index === 0 ? `Primary - ${photoDirectory}` : photoDirectory}</span>
-                  <button
-                    className="icon-button"
-                    onClick={() => onRemovePhotoDirectory(photoDirectory)}
-                    title="Remove photo location"
-                  >
-                    <X size={16} />
-                  </button>
+                  {index === 0 ? (
+                    <button
+                      className="text-button"
+                      onClick={onChooseRoot}
+                    >
+                      <FolderOpen size={16} />
+                      <span>Change</span>
+                    </button>
+                  ) : (
+                    <button
+                      className="icon-button"
+                      onClick={() => onRemovePhotoDirectory(photoDirectory)}
+                      title="Remove photo location"
+                    >
+                      <X size={16} />
+                    </button>
+                  )}
                 </li>
               ))}
             </ul>
@@ -914,7 +914,7 @@ function SettingsView({
             </button>
           </div>
           {excludedDirectories.length > 0 ? (
-            <ul className="exclusion-list">
+            <ul className="path-list">
               {excludedDirectories.map((excludedPath) => (
                 <li key={excludedPath}>
                   <span>{formatExcludedDirectory(photoDirectories, excludedPath)}</span>
