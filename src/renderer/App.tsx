@@ -11,6 +11,7 @@ import {
   RefreshCcw,
   Settings,
   Sparkles,
+  Trash2,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -344,6 +345,29 @@ export function App(): JSX.Element {
     }
   }, [loadHome, mergeState, state.settings.photoDirectory, view.name]);
 
+  const clearCache = useCallback(async () => {
+    mergeState({
+      loading: true,
+      statusText: "Clearing cache",
+      scanProgress: {
+        phase: "discovering",
+        rootDir: state.settings.photoDirectory,
+        message: "Clearing cached thumbnails and rebuilding library"
+      }
+    });
+    const { settings, summary } = await window.gridMode.settings.clearCache();
+    mergeState({
+      settings,
+      summary,
+      loading: false,
+      statusText: undefined,
+      scanProgress: undefined
+    });
+    if (view.name === "home") {
+      await loadHome();
+    }
+  }, [loadHome, mergeState, state.settings.photoDirectory, view.name]);
+
   const openPhoto = useCallback(
     (photo: PhotoAsset) => {
       void openView({ name: "photo", photo, previous: view });
@@ -375,6 +399,7 @@ export function App(): JSX.Element {
           onChooseExclusion={chooseExclusion}
           onRemoveExclusion={removeExclusion}
           onRescan={rescan}
+          onClearCache={clearCache}
           updateStatus={updateStatus}
           onCheckUpdates={() => void window.gridMode.updates.check()}
         />
@@ -435,6 +460,7 @@ export function App(): JSX.Element {
     chooseRoot,
     addPhotoDirectory,
     chooseExclusion,
+    clearCache,
     loadHome,
     openPhoto,
     openView,
@@ -785,6 +811,7 @@ function SettingsView({
   onChooseExclusion,
   onRemoveExclusion,
   onRescan,
+  onClearCache,
   onCheckUpdates
 }: {
   settings: AppSettings;
@@ -796,6 +823,7 @@ function SettingsView({
   onChooseExclusion: () => void;
   onRemoveExclusion: (excludedPath: string) => void;
   onRescan: () => void;
+  onClearCache: () => void;
   onCheckUpdates: () => void;
 }): JSX.Element {
   const excludedDirectories = settings.excludedDirectories ?? [];
@@ -911,6 +939,13 @@ function SettingsView({
           >
             <RefreshCcw size={16} />
             <span>Rescan</span>
+          </button>
+          <button
+            className="text-button"
+            onClick={onClearCache}
+          >
+            <Trash2 size={16} />
+            <span>Clear cache</span>
           </button>
           <button
             className="text-button"

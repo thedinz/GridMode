@@ -16,6 +16,7 @@ const api = {
     chooseRoot: (): Promise<SettingsPayload> => ipcRenderer.invoke("settings:choose-root"),
     addRoot: (): Promise<SettingsPayload> => ipcRenderer.invoke("settings:add-root"),
     removeRoot: (rootPath: string): Promise<SettingsPayload> => ipcRenderer.invoke("settings:remove-root", rootPath),
+    clearCache: (): Promise<SettingsPayload> => ipcRenderer.invoke("settings:clear-cache"),
     chooseExclusion: (): Promise<SettingsPayload> => ipcRenderer.invoke("settings:choose-exclusion"),
     removeExclusion: (excludedPath: string): Promise<SettingsPayload> =>
       ipcRenderer.invoke("settings:remove-exclusion", excludedPath)

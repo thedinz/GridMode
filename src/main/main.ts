@@ -348,6 +348,16 @@ function registerIpc(): void {
     };
   });
 
+  ipcMain.handle("settings:clear-cache", async (): Promise<SettingsPayload> => {
+    await clearLibraryCache();
+    const summary = await scanLibrary(true);
+
+    return {
+      settings,
+      summary
+    };
+  });
+
   ipcMain.handle("settings:choose-exclusion", async (): Promise<SettingsPayload> => {
     const photoDirectories = getPhotoDirectories(settings);
     if (photoDirectories.length === 0) {
@@ -1442,6 +1452,32 @@ function settingsPath(): string {
 
 function libraryIndexPath(): string {
   return path.join(app.getPath("userData"), "library-index.json");
+}
+
+function imageCachePath(): string {
+  return path.join(app.getPath("userData"), "image-cache");
+}
+
+async function clearLibraryCache(): Promise<void> {
+  if (activeScan) {
+    await activeScan;
+  }
+
+  const pendingRenders = Array.from(pendingImageRenders.values());
+  if (pendingRenders.length > 0) {
+    await Promise.allSettled(pendingRenders);
+  }
+
+  pendingImageRenders.clear();
+  cachedPhotos = [];
+  cachedPhotoStats = new Map();
+  cachedSummary = emptySummary(getPhotoDirectories(settings));
+  hasLibraryIndex = false;
+
+  await Promise.all([
+    fs.rm(imageCachePath(), { recursive: true, force: true }),
+    fs.rm(libraryIndexPath(), { force: true })
+  ]);
 }
 
 async function readSettings(): Promise<Settings> {
