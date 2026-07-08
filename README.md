@@ -4,12 +4,12 @@ GridMode is a Windows and macOS desktop photo viewer for people who already like
 
 ## First Version
 
-- Home grid with randomized square thumbnails from the selected photo directory.
+- Home grid with randomized square thumbnails from the selected photo locations.
 - Photo detail view with a large image and extracted EXIF/date/location metadata.
 - Cached thumbnail rendering for faster grids, including TIFF/TIF support through a native image pipeline.
 - Persistent library indexing so startup can reuse cached metadata and only process new or modified photos.
 - Library view grouped by year, then month, using EXIF dates with file modified time as a fallback.
-- Settings view for choosing, rescanning, and excluding folders from the photo directory.
+- Settings view for choosing, adding, rescanning, and excluding photo locations.
 - Windows NSIS and macOS DMG/ZIP installers built with Electron Builder.
 - Auto-update plumbing through GitHub releases.
 

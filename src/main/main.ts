@@ -74,7 +74,8 @@ interface LibraryIndexEntry {
 
 interface LibraryIndexFile {
   version: number;
-  rootDir: string;
+  rootDir?: string;
+  rootDirs?: string[];
   excludedDirectories?: string[];
   scannedAt: string;
   warnings?: string[];
@@ -146,7 +147,7 @@ app.on("second-instance", () => {
 
 app.whenReady().then(async () => {
   settings = await readSettings();
-  await loadCachedLibrary(settings.photoDirectory, settings.excludedDirectories ?? []);
+  await loadCachedLibrary(getPhotoDirectories(settings), settings.excludedDirectories ?? []);
   registerPhotoProtocol();
   registerIpc();
   configureUpdates();
@@ -205,7 +206,8 @@ function registerPhotoProtocol(): void {
       return new Response("Unsupported photo request.", { status: 400 });
     }
 
-    if (!settings.photoDirectory || !isInsideDirectory(settings.photoDirectory, filePath)) {
+    const photoDirectories = getPhotoDirectories(settings);
+    if (photoDirectories.length === 0 || !isInsideAnyDirectory(photoDirectories, filePath)) {
       return new Response("Photo is outside the configured library.", { status: 403 });
     }
 
@@ -255,16 +257,28 @@ function registerIpc(): void {
       };
     }
 
-    settings = {
-      photoDirectory: path.resolve(result.filePaths[0]),
-      excludedDirectories: []
-    };
-    cachedPhotos = [];
-    cachedPhotoStats = new Map();
-    cachedSummary = emptySummary(settings.photoDirectory);
-    hasLibraryIndex = false;
+    const selectedRoot = path.resolve(result.filePaths[0]);
+    const previousPhotoDirectories = getPhotoDirectories(settings);
+    const nextPhotoDirectories = previousPhotoDirectories.length > 0
+      ? normalizePhotoDirectories([
+          selectedRoot,
+          ...previousPhotoDirectories.slice(1).filter((photoDirectory) => !sameDirectory(photoDirectory, selectedRoot))
+        ])
+      : [selectedRoot];
+    settings = normalizeSettings({
+      ...settings,
+      photoDirectory: selectedRoot,
+      photoDirectories: nextPhotoDirectories,
+      excludedDirectories: previousPhotoDirectories.length > 0 ? settings.excludedDirectories : []
+    });
+    if (previousPhotoDirectories.length === 0) {
+      cachedPhotos = [];
+      cachedPhotoStats = new Map();
+      cachedSummary = emptySummary(getPhotoDirectories(settings));
+      hasLibraryIndex = false;
+    }
     await writeSettings(settings);
-    const summary = await scanLibrary(true);
+    const summary = await scanLibrary(previousPhotoDirectories.length === 0);
 
     return {
       settings,
@@ -272,8 +286,71 @@ function registerIpc(): void {
     };
   });
 
+  ipcMain.handle("settings:add-root", async (): Promise<SettingsPayload> => {
+    const photoDirectories = getPhotoDirectories(settings);
+    const result = await dialog.showOpenDialog({
+      title: "Add a photo folder",
+      defaultPath: photoDirectories[0],
+      properties: ["openDirectory"]
+    });
+
+    if (result.canceled || result.filePaths.length === 0) {
+      return {
+        settings,
+        summary: cachedSummary
+      };
+    }
+
+    const nextPhotoDirectories = normalizePhotoDirectories([
+      ...photoDirectories,
+      path.resolve(result.filePaths[0])
+    ]);
+    settings = normalizeSettings({
+      ...settings,
+      photoDirectory: nextPhotoDirectories[0],
+      photoDirectories: nextPhotoDirectories
+    });
+    await writeSettings(settings);
+    const summary = await scanLibrary(false);
+
+    return {
+      settings,
+      summary
+    };
+  });
+
+  ipcMain.handle("settings:remove-root", async (_event, rootPath: string): Promise<SettingsPayload> => {
+    const nextPhotoDirectories = getPhotoDirectories(settings)
+      .filter((photoDirectory) => !sameDirectory(photoDirectory, rootPath));
+
+    settings = normalizeSettings({
+      ...settings,
+      photoDirectory: nextPhotoDirectories[0],
+      photoDirectories: nextPhotoDirectories
+    });
+    await writeSettings(settings);
+
+    if (nextPhotoDirectories.length === 0) {
+      cachedPhotos = [];
+      cachedPhotoStats = new Map();
+      cachedSummary = emptySummary();
+      hasLibraryIndex = false;
+      return {
+        settings,
+        summary: cachedSummary
+      };
+    }
+
+    const summary = await scanLibrary(false);
+    return {
+      settings,
+      summary
+    };
+  });
+
   ipcMain.handle("settings:choose-exclusion", async (): Promise<SettingsPayload> => {
-    if (!settings.photoDirectory) {
+    const photoDirectories = getPhotoDirectories(settings);
+    if (photoDirectories.length === 0) {
       return {
         settings,
         summary: cachedSummary
@@ -282,7 +359,7 @@ function registerIpc(): void {
 
     const result = await dialog.showOpenDialog({
       title: "Exclude a folder",
-      defaultPath: settings.photoDirectory,
+      defaultPath: photoDirectories[0],
       properties: ["openDirectory"]
     });
 
@@ -294,11 +371,11 @@ function registerIpc(): void {
     }
 
     const selectedPath = path.resolve(result.filePaths[0]);
-    if (!isValidExcludedDirectory(settings.photoDirectory, selectedPath)) {
+    if (!isValidExcludedDirectory(photoDirectories, selectedPath)) {
       const message = {
         type: "warning",
         title: "Folder cannot be excluded",
-        message: "Choose a subfolder inside the selected photo directory."
+        message: "Choose a subfolder inside one of the selected photo locations."
       } as const;
       if (mainWindow) {
         await dialog.showMessageBox(mainWindow, message);
@@ -313,7 +390,7 @@ function registerIpc(): void {
 
     settings = {
       ...settings,
-      excludedDirectories: addExcludedDirectory(settings.photoDirectory, settings.excludedDirectories ?? [], selectedPath)
+      excludedDirectories: addExcludedDirectory(photoDirectories, settings.excludedDirectories ?? [], selectedPath)
     };
     await writeSettings(settings);
     const summary = await scanLibrary(false);
@@ -325,7 +402,7 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("settings:remove-exclusion", async (_event, excludedPath: string): Promise<SettingsPayload> => {
-    if (!settings.photoDirectory) {
+    if (getPhotoDirectories(settings).length === 0) {
       return {
         settings,
         summary: cachedSummary
@@ -423,7 +500,8 @@ function registerIpc(): void {
 }
 
 async function ensureLibrary(): Promise<LibrarySummary> {
-  if (!settings.photoDirectory) {
+  const photoDirectories = getPhotoDirectories(settings);
+  if (photoDirectories.length === 0) {
     cachedPhotos = [];
     cachedPhotoStats = new Map();
     cachedSummary = emptySummary();
@@ -439,7 +517,8 @@ async function ensureLibrary(): Promise<LibrarySummary> {
 }
 
 async function scanLibrary(force: boolean): Promise<LibrarySummary> {
-  if (!settings.photoDirectory) {
+  const photoDirectories = getPhotoDirectories(settings);
+  if (photoDirectories.length === 0) {
     cachedPhotos = [];
     cachedPhotoStats = new Map();
     cachedSummary = emptySummary();
@@ -451,7 +530,7 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
     return activeScan;
   }
 
-  activeScan = doScan(settings.photoDirectory, force);
+  activeScan = doScan(photoDirectories, force);
   try {
     cachedSummary = await activeScan;
     settings = {
@@ -463,7 +542,7 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
   } catch (error) {
     sendScanProgress({
       phase: "error",
-      rootDir: settings.photoDirectory,
+      rootDir: formatRootSummary(photoDirectories),
       message: getErrorMessage(error)
     });
     throw error;
@@ -472,10 +551,10 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
   }
 }
 
-async function doScan(rootDir: string, force: boolean): Promise<LibrarySummary> {
+async function doScan(rootDirs: string[], force: boolean): Promise<LibrarySummary> {
   const warnings: string[] = [];
-  const excludedDirectories = normalizeExcludedDirectories(rootDir, settings.excludedDirectories ?? []);
-  const emitProgress = createScanProgressEmitter(rootDir);
+  const excludedDirectories = normalizeExcludedDirectories(rootDirs, settings.excludedDirectories ?? []);
+  const emitProgress = createScanProgressEmitter(formatRootSummary(rootDirs) ?? "Photo library");
 
   emitProgress({
     phase: "discovering",
@@ -485,7 +564,7 @@ async function doScan(rootDir: string, force: boolean): Promise<LibrarySummary> 
     message: hasLibraryIndex && !force ? "Checking folders for changes" : "Finding photos"
   });
 
-  const files = await findPhotoFiles(rootDir, warnings, excludedDirectories, (progress) => {
+  const files = await findPhotoFiles(rootDirs, warnings, excludedDirectories, (progress) => {
     emitProgress({
       phase: "discovering",
       ...progress,
@@ -568,10 +647,10 @@ async function doScan(rootDir: string, force: boolean): Promise<LibrarySummary> 
     .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
   cachedPhotoStats = nextStats;
 
-  const summary = buildSummary(rootDir, cachedPhotos, warnings);
+  const summary = buildSummary(rootDirs, cachedPhotos, warnings);
   cachedSummary = summary;
   hasLibraryIndex = true;
-  await writeLibraryIndex(rootDir, summary);
+  await writeLibraryIndex(rootDirs, summary);
 
   emitProgress({
     phase: "complete",
@@ -588,13 +667,13 @@ async function doScan(rootDir: string, force: boolean): Promise<LibrarySummary> 
 }
 
 async function findPhotoFiles(
-  rootDir: string,
+  rootDirs: string[],
   warnings: string[],
   excludedDirectories: string[],
   onProgress: (progress: Pick<ScanProgress, "foldersScanned" | "photosFound" | "foldersExcluded" | "currentPath">) => void
 ): Promise<PhotoFileSnapshot[]> {
   const found: PhotoFileSnapshot[] = [];
-  const pending = [rootDir];
+  const pending = [...rootDirs].reverse();
   let foldersScanned = 0;
   let foldersExcluded = 0;
 
@@ -604,7 +683,7 @@ async function findPhotoFiles(
       continue;
     }
 
-    if (!sameDirectory(current, rootDir) && isPathExcluded(current, excludedDirectories)) {
+    if (!isConfiguredRootDirectory(rootDirs, current) && isPathExcluded(current, excludedDirectories)) {
       foldersExcluded += 1;
       onProgress({
         foldersScanned,
@@ -809,14 +888,15 @@ async function readDetailedExif(filePath: string): Promise<ExifRow[]> {
 }
 
 function buildSummary(
-  rootDir: string | undefined,
+  rootDirs: string[],
   photos: PhotoAsset[],
   warnings: string[],
   lastScanAt: string = new Date().toISOString()
 ): LibrarySummary {
   const years = groupYears(photos);
   return {
-    rootDir,
+    rootDir: formatRootSummary(rootDirs),
+    rootDirs,
     photoCount: photos.length,
     years,
     lastScanAt,
@@ -842,9 +922,10 @@ function formatScanCompleteMessage(total: number, reused: number, changed: numbe
   return parts.join(" - ");
 }
 
-function emptySummary(rootDir?: string): LibrarySummary {
+function emptySummary(rootDirs: string[] = []): LibrarySummary {
   return {
-    rootDir,
+    rootDir: formatRootSummary(rootDirs),
+    rootDirs,
     photoCount: 0,
     years: [],
     warnings: []
@@ -1069,20 +1150,56 @@ function isInsideDirectory(rootDir: string, filePath: string): boolean {
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
-function isValidExcludedDirectory(rootDir: string, candidatePath: string): boolean {
-  return isInsideDirectory(rootDir, candidatePath) && !sameDirectory(rootDir, candidatePath);
+function isInsideAnyDirectory(rootDirs: string[], filePath: string): boolean {
+  return rootDirs.some((rootDir) => isInsideDirectory(rootDir, filePath));
 }
 
-function normalizeExcludedDirectories(rootDir: string | undefined, excludedDirectories: string[] = []): string[] {
-  if (!rootDir) {
+function isConfiguredRootDirectory(rootDirs: string[], candidatePath: string): boolean {
+  return rootDirs.some((rootDir) => sameDirectory(rootDir, candidatePath));
+}
+
+function isValidExcludedDirectory(rootDirs: string[], candidatePath: string): boolean {
+  return isInsideAnyDirectory(rootDirs, candidatePath) && !isConfiguredRootDirectory(rootDirs, candidatePath);
+}
+
+function normalizePhotoDirectories(photoDirectories: string[] = []): string[] {
+  const normalized = photoDirectories
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => path.resolve(item));
+
+  const compacted: string[] = [];
+  for (const item of normalized) {
+    if (compacted.some((existing) => sameDirectory(existing, item) || isInsideDirectory(existing, item))) {
+      continue;
+    }
+
+    for (let index = compacted.length - 1; index >= 0; index -= 1) {
+      if (isInsideDirectory(item, compacted[index])) {
+        compacted.splice(index, 1);
+      }
+    }
+    compacted.push(item);
+  }
+
+  return compacted;
+}
+
+function getPhotoDirectories(nextSettings: Settings): string[] {
+  return normalizePhotoDirectories([
+    nextSettings.photoDirectory,
+    ...(nextSettings.photoDirectories ?? [])
+  ].filter((item): item is string => typeof item === "string"));
+}
+
+function normalizeExcludedDirectories(rootDirs: string[], excludedDirectories: string[] = []): string[] {
+  if (rootDirs.length === 0) {
     return [];
   }
 
-  const rootPath = path.resolve(rootDir);
   const normalized = excludedDirectories
     .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     .map((item) => path.resolve(item))
-    .filter((item) => isValidExcludedDirectory(rootPath, item))
+    .filter((item) => isValidExcludedDirectory(rootDirs, item))
     .sort((a, b) => a.length - b.length || comparePath(a, b));
 
   const compacted: string[] = [];
@@ -1095,8 +1212,8 @@ function normalizeExcludedDirectories(rootDir: string | undefined, excludedDirec
   return compacted;
 }
 
-function addExcludedDirectory(rootDir: string, existing: string[], candidatePath: string): string[] {
-  return normalizeExcludedDirectories(rootDir, [...existing, candidatePath]);
+function addExcludedDirectory(rootDirs: string[], existing: string[], candidatePath: string): string[] {
+  return normalizeExcludedDirectories(rootDirs, [...existing, candidatePath]);
 }
 
 function removeExcludedDirectory(existing: string[], candidatePath: string): string[] {
@@ -1106,6 +1223,16 @@ function removeExcludedDirectory(existing: string[], candidatePath: string): str
 
 function isPathExcluded(filePath: string, excludedDirectories: string[]): boolean {
   return excludedDirectories.some((excludedDirectory) => isInsideDirectory(excludedDirectory, filePath));
+}
+
+function formatRootSummary(rootDirs: string[]): string | undefined {
+  if (rootDirs.length === 0) {
+    return undefined;
+  }
+  if (rootDirs.length === 1) {
+    return rootDirs[0];
+  }
+  return `${rootDirs.length.toLocaleString()} photo locations`;
 }
 
 function normalizeDate(value: unknown): Date | undefined {
@@ -1199,23 +1326,23 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function loadCachedLibrary(rootDir: string | undefined, excludedDirectories: string[] = []): Promise<void> {
+async function loadCachedLibrary(rootDirs: string[], excludedDirectories: string[] = []): Promise<void> {
   cachedPhotos = [];
   cachedPhotoStats = new Map();
-  cachedSummary = emptySummary(rootDir);
+  cachedSummary = emptySummary(rootDirs);
   hasLibraryIndex = false;
 
-  if (!rootDir) {
+  if (rootDirs.length === 0) {
     return;
   }
 
   try {
     const index = parseJson(await fs.readFile(libraryIndexPath(), "utf8")) as LibraryIndexFile;
-    if (!isUsableLibraryIndex(index, rootDir, excludedDirectories)) {
+    if (!isUsableLibraryIndex(index, rootDirs, excludedDirectories)) {
       return;
     }
 
-    const entries = index.photos.filter((entry) => isUsableLibraryIndexEntry(entry, rootDir));
+    const entries = index.photos.filter((entry) => isUsableLibraryIndexEntry(entry, rootDirs));
     cachedPhotos = entries
       .map((entry) => refreshCachedPhotoAsset(entry.photo, entry))
       .sort((a, b) => Date.parse(b.capturedAt) - Date.parse(a.capturedAt));
@@ -1227,18 +1354,19 @@ async function loadCachedLibrary(rootDir: string | undefined, excludedDirectorie
         mtimeMs: entry.mtimeMs
       }
     ]));
-    cachedSummary = buildSummary(rootDir, cachedPhotos, index.warnings ?? [], index.scannedAt);
+    cachedSummary = buildSummary(rootDirs, cachedPhotos, index.warnings ?? [], index.scannedAt);
     hasLibraryIndex = true;
   } catch {
-    cachedSummary = emptySummary(rootDir);
+    cachedSummary = emptySummary(rootDirs);
   }
 }
 
-async function writeLibraryIndex(rootDir: string, summary: LibrarySummary): Promise<void> {
+async function writeLibraryIndex(rootDirs: string[], summary: LibrarySummary): Promise<void> {
   const index: LibraryIndexFile = {
     version: libraryIndexVersion,
-    rootDir,
-    excludedDirectories: normalizeExcludedDirectories(rootDir, settings.excludedDirectories ?? []),
+    rootDir: rootDirs[0],
+    rootDirs,
+    excludedDirectories: normalizeExcludedDirectories(rootDirs, settings.excludedDirectories ?? []),
     scannedAt: summary.lastScanAt ?? new Date().toISOString(),
     warnings: summary.warnings,
     photos: cachedPhotos.flatMap((photo) => {
@@ -1263,27 +1391,32 @@ async function writeLibraryIndex(rootDir: string, summary: LibrarySummary): Prom
   await fs.rename(temp, target);
 }
 
-function isUsableLibraryIndex(index: LibraryIndexFile, rootDir: string, excludedDirectories: string[]): boolean {
+function isUsableLibraryIndex(index: LibraryIndexFile, rootDirs: string[], excludedDirectories: string[]): boolean {
+  const indexRootDirs = normalizePhotoDirectories([
+    ...(index.rootDir ? [index.rootDir] : []),
+    ...(index.rootDirs ?? [])
+  ]);
+
   return (
     index.version === libraryIndexVersion &&
-    sameDirectory(index.rootDir, rootDir) &&
+    sameDirectories(indexRootDirs, rootDirs) &&
     sameDirectories(
-      normalizeExcludedDirectories(rootDir, index.excludedDirectories ?? []),
-      normalizeExcludedDirectories(rootDir, excludedDirectories)
+      normalizeExcludedDirectories(rootDirs, index.excludedDirectories ?? []),
+      normalizeExcludedDirectories(rootDirs, excludedDirectories)
     ) &&
     typeof index.scannedAt === "string" &&
     Array.isArray(index.photos)
   );
 }
 
-function isUsableLibraryIndexEntry(entry: LibraryIndexEntry, rootDir: string): boolean {
+function isUsableLibraryIndexEntry(entry: LibraryIndexEntry, rootDirs: string[]): boolean {
   return (
     typeof entry.path === "string" &&
     typeof entry.size === "number" &&
     typeof entry.mtimeMs === "number" &&
     typeof entry.photo?.capturedAt === "string" &&
     supportedExtensions.has(path.extname(entry.path).toLowerCase()) &&
-    isInsideDirectory(rootDir, entry.path)
+    isInsideAnyDirectory(rootDirs, entry.path)
   );
 }
 
@@ -1321,15 +1454,16 @@ async function readSettings(): Promise<Settings> {
 }
 
 function normalizeSettings(rawSettings: Settings): Settings {
-  const photoDirectory =
-    typeof rawSettings.photoDirectory === "string" && rawSettings.photoDirectory.trim().length > 0
-      ? path.resolve(rawSettings.photoDirectory)
-      : undefined;
+  const photoDirectories = normalizePhotoDirectories([
+    rawSettings.photoDirectory,
+    ...(rawSettings.photoDirectories ?? [])
+  ].filter((item): item is string => typeof item === "string"));
 
   return {
     ...rawSettings,
-    photoDirectory,
-    excludedDirectories: normalizeExcludedDirectories(photoDirectory, rawSettings.excludedDirectories ?? [])
+    photoDirectory: photoDirectories[0],
+    photoDirectories,
+    excludedDirectories: normalizeExcludedDirectories(photoDirectories, rawSettings.excludedDirectories ?? [])
   };
 }
 

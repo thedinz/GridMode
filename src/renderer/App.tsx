@@ -178,17 +178,18 @@ export function App(): JSX.Element {
           return;
         }
         mergeState({ settings, summary });
-        if (settings.photoDirectory) {
+        const photoDirectories = getPhotoDirectories(settings);
+        if (photoDirectories.length > 0) {
           const hasCachedLibrary = summary.photoCount > 0 || Boolean(summary.lastScanAt);
           if (hasCachedLibrary) {
             await loadHome({ label: "Loading cached library" });
             if (mounted) {
-              void checkLibraryForChanges(settings.photoDirectory);
+              void checkLibraryForChanges(photoDirectories[0]);
             }
           } else {
             await loadHome({
               label: "Building library cache",
-              rootDir: settings.photoDirectory,
+              rootDir: photoDirectories[0],
               scanMessage: "Building library cache"
             });
           }
@@ -235,10 +236,56 @@ export function App(): JSX.Element {
       statusText: undefined,
       scanProgress: undefined
     });
-    if (settings.photoDirectory) {
+    if (getPhotoDirectories(settings).length > 0) {
       await openView({ name: "home" });
     }
   }, [mergeState, openView]);
+
+  const addPhotoDirectory = useCallback(async () => {
+    mergeState({
+      loading: true,
+      statusText: "Adding photo location",
+      scanProgress: {
+        phase: "discovering",
+        rootDir: state.settings.photoDirectory,
+        message: "Waiting for folder selection"
+      }
+    });
+    const { settings, summary } = await window.gridMode.settings.addRoot();
+    mergeState({
+      settings,
+      summary,
+      loading: false,
+      statusText: undefined,
+      scanProgress: undefined
+    });
+    if (view.name === "home") {
+      await loadHome();
+    }
+  }, [loadHome, mergeState, state.settings.photoDirectory, view.name]);
+
+  const removePhotoDirectory = useCallback(async (rootPath: string) => {
+    mergeState({
+      loading: true,
+      statusText: "Removing photo location",
+      scanProgress: {
+        phase: "discovering",
+        rootDir: state.settings.photoDirectory,
+        message: "Checking folders for changes"
+      }
+    });
+    const { settings, summary } = await window.gridMode.settings.removeRoot(rootPath);
+    mergeState({
+      settings,
+      summary,
+      loading: false,
+      statusText: undefined,
+      scanProgress: undefined
+    });
+    if (getPhotoDirectories(settings).length > 0 && view.name === "home") {
+      await loadHome();
+    }
+  }, [loadHome, mergeState, state.settings.photoDirectory, view.name]);
 
   const chooseExclusion = useCallback(async () => {
     mergeState({
@@ -307,7 +354,7 @@ export function App(): JSX.Element {
   const content = useMemo(() => {
     const isScanningLibrary = state.loading && Boolean(state.scanProgress);
 
-    if (!state.settings.photoDirectory) {
+    if (getPhotoDirectories(state.settings).length === 0) {
       return (
         <FirstRunView
           onChooseRoot={chooseRoot}
@@ -323,6 +370,8 @@ export function App(): JSX.Element {
           settings={state.settings}
           summary={state.summary}
           onChooseRoot={chooseRoot}
+          onAddPhotoDirectory={addPhotoDirectory}
+          onRemovePhotoDirectory={removePhotoDirectory}
           onChooseExclusion={chooseExclusion}
           onRemoveExclusion={removeExclusion}
           onRescan={rescan}
@@ -384,11 +433,13 @@ export function App(): JSX.Element {
     );
   }, [
     chooseRoot,
+    addPhotoDirectory,
     chooseExclusion,
     loadHome,
     openPhoto,
     openView,
     removeExclusion,
+    removePhotoDirectory,
     rescan,
     state.details,
     state.homePhotos,
@@ -400,7 +451,7 @@ export function App(): JSX.Element {
     view
   ]);
 
-  const hasPhotoDirectory = Boolean(state.settings.photoDirectory);
+  const hasPhotoDirectory = getPhotoDirectories(state.settings).length > 0;
 
   return (
     <div className={hasPhotoDirectory ? "app-shell" : "app-shell first-run-shell"}>
@@ -729,6 +780,8 @@ function SettingsView({
   summary,
   updateStatus,
   onChooseRoot,
+  onAddPhotoDirectory,
+  onRemovePhotoDirectory,
   onChooseExclusion,
   onRemoveExclusion,
   onRescan,
@@ -738,12 +791,15 @@ function SettingsView({
   summary: LibrarySummary;
   updateStatus: UpdateStatus;
   onChooseRoot: () => void;
+  onAddPhotoDirectory: () => void;
+  onRemovePhotoDirectory: (rootPath: string) => void;
   onChooseExclusion: () => void;
   onRemoveExclusion: (excludedPath: string) => void;
   onRescan: () => void;
   onCheckUpdates: () => void;
 }): JSX.Element {
   const excludedDirectories = settings.excludedDirectories ?? [];
+  const photoDirectories = getPhotoDirectories(settings);
 
   return (
     <section className="settings-view">
@@ -764,10 +820,47 @@ function SettingsView({
             <span>Choose</span>
           </button>
         </div>
+        <div className="settings-section">
+          <div className="section-title-row">
+            <div>
+              <p>Locations</p>
+              <h2>Photo locations</h2>
+            </div>
+            <button
+              className="text-button"
+              onClick={onAddPhotoDirectory}
+            >
+              <FolderOpen size={16} />
+              <span>Add</span>
+            </button>
+          </div>
+          {photoDirectories.length > 0 ? (
+            <ul className="exclusion-list">
+              {photoDirectories.map((photoDirectory, index) => (
+                <li key={photoDirectory}>
+                  <span>{index === 0 ? `Primary - ${photoDirectory}` : photoDirectory}</span>
+                  <button
+                    className="icon-button"
+                    onClick={() => onRemovePhotoDirectory(photoDirectory)}
+                    title="Remove photo location"
+                  >
+                    <X size={16} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="settings-note">No photo locations selected</p>
+          )}
+        </div>
         <div className="settings-metrics">
           <Metric
             label="Photos"
             value={summary.photoCount.toLocaleString()}
+          />
+          <Metric
+            label="Locations"
+            value={photoDirectories.length.toLocaleString()}
           />
           <Metric
             label="Years"
@@ -796,7 +889,7 @@ function SettingsView({
             <ul className="exclusion-list">
               {excludedDirectories.map((excludedPath) => (
                 <li key={excludedPath}>
-                  <span>{formatExcludedDirectory(settings.photoDirectory, excludedPath)}</span>
+                  <span>{formatExcludedDirectory(photoDirectories, excludedPath)}</span>
                   <button
                     className="icon-button"
                     onClick={() => onRemoveExclusion(excludedPath)}
@@ -1067,20 +1160,38 @@ function formatDate(value: string): string {
   });
 }
 
-function formatExcludedDirectory(rootDir: string | undefined, excludedPath: string): string {
-  if (!rootDir) {
+function getPhotoDirectories(settings: AppSettings): string[] {
+  const directories = [
+    settings.photoDirectory,
+    ...(settings.photoDirectories ?? [])
+  ].filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+
+  const unique: string[] = [];
+  for (const directory of directories) {
+    const normalizedDirectory = directory.replace(/[\\/]+$/, "");
+    if (!unique.some((item) => item.toLowerCase() === normalizedDirectory.toLowerCase())) {
+      unique.push(normalizedDirectory);
+    }
+  }
+  return unique;
+}
+
+function formatExcludedDirectory(rootDirs: string[], excludedPath: string): string {
+  if (rootDirs.length === 0) {
     return excludedPath;
   }
 
-  const normalizedRoot = rootDir.replace(/[\\/]+$/, "");
-  const lowerRoot = normalizedRoot.toLowerCase();
-  const lowerPath = excludedPath.toLowerCase();
-  if (lowerPath === lowerRoot) {
-    return excludedPath;
-  }
+  for (const rootDir of rootDirs) {
+    const normalizedRoot = rootDir.replace(/[\\/]+$/, "");
+    const lowerRoot = normalizedRoot.toLowerCase();
+    const lowerPath = excludedPath.toLowerCase();
+    if (lowerPath === lowerRoot) {
+      return excludedPath;
+    }
 
-  if (lowerPath.startsWith(`${lowerRoot}\\`) || lowerPath.startsWith(`${lowerRoot}/`)) {
-    return excludedPath.slice(normalizedRoot.length + 1);
+    if (lowerPath.startsWith(`${lowerRoot}\\`) || lowerPath.startsWith(`${lowerRoot}/`)) {
+      return excludedPath.slice(normalizedRoot.length + 1);
+    }
   }
 
   return excludedPath;

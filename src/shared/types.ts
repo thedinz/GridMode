@@ -1,5 +1,6 @@
 export interface Settings {
   photoDirectory?: string;
+  photoDirectories?: string[];
   excludedDirectories?: string[];
   lastScanAt?: string;
 }
@@ -49,6 +50,7 @@ export interface MonthSummary {
 
 export interface LibrarySummary {
   rootDir?: string;
+  rootDirs?: string[];
   photoCount: number;
   years: YearSummary[];
   lastScanAt?: string;
