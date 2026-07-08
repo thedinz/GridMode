@@ -95,9 +95,6 @@ app.whenReady().then(async () => {
   registerIpc();
   configureUpdates();
   await createWindow();
-  if (settings.photoDirectory) {
-    void scanLibrary(false);
-  }
   if (app.isPackaged) {
     setTimeout(() => {
       void checkForUpdates();
@@ -299,6 +296,13 @@ async function scanLibrary(force: boolean): Promise<LibrarySummary> {
     };
     await writeSettings(settings);
     return cachedSummary;
+  } catch (error) {
+    sendScanProgress({
+      phase: "error",
+      rootDir: settings.photoDirectory,
+      message: getErrorMessage(error)
+    });
+    throw error;
   } finally {
     activeScan = null;
   }

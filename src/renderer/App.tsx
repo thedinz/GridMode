@@ -52,6 +52,12 @@ const initialSummary: LibrarySummary = {
   warnings: []
 };
 
+interface LoadHomeOptions {
+  label?: string;
+  rootDir?: string;
+  scanMessage?: string;
+}
+
 export function App(): JSX.Element {
   const [view, setView] = useState<View>({ name: "home" });
   const [state, setState] = useState<AppState>({
@@ -69,20 +75,32 @@ export function App(): JSX.Element {
     }));
   }, []);
 
-  const loadHome = useCallback(async () => {
-    mergeState({ loading: true, statusText: "Refreshing grid" });
+  const loadHome = useCallback(async (options: LoadHomeOptions = {}) => {
+    mergeState({
+      loading: true,
+      statusText: options.label ?? "Refreshing grid",
+      scanProgress: options.scanMessage
+        ? {
+            phase: "discovering",
+            rootDir: options.rootDir,
+            message: options.scanMessage
+          }
+        : undefined
+    });
     try {
       const payload: HomePayload = await window.gridMode.library.getHome();
       mergeState({
         summary: payload.summary,
         homePhotos: payload.photos,
         loading: false,
-        statusText: undefined
+        statusText: undefined,
+        scanProgress: undefined
       });
     } catch (error) {
       mergeState({
         loading: false,
-        statusText: getErrorMessage(error)
+        statusText: getErrorMessage(error),
+        scanProgress: undefined
       });
     }
   }, [mergeState]);
@@ -128,7 +146,11 @@ export function App(): JSX.Element {
         }
         mergeState({ settings, summary });
         if (settings.photoDirectory) {
-          await loadHome();
+          await loadHome({
+            label: "Checking library",
+            rootDir: settings.photoDirectory,
+            scanMessage: "Checking library for changes"
+          });
         } else {
           setView({ name: "home" });
           mergeState({ loading: false, statusText: undefined });
@@ -202,6 +224,8 @@ export function App(): JSX.Element {
   );
 
   const content = useMemo(() => {
+    const isScanningLibrary = state.loading && Boolean(state.scanProgress);
+
     if (!state.settings.photoDirectory) {
       return (
         <FirstRunView
@@ -270,6 +294,7 @@ export function App(): JSX.Element {
         summary={state.summary}
         onOpenPhoto={openPhoto}
         onRefresh={() => void loadHome()}
+        isScanning={isScanningLibrary}
       />
     );
   }, [
@@ -418,13 +443,24 @@ function HomeView({
   photos,
   summary,
   onOpenPhoto,
-  onRefresh
+  onRefresh,
+  isScanning = false
 }: {
   photos: PhotoAsset[];
   summary: LibrarySummary;
   onOpenPhoto: (photo: PhotoAsset) => void;
   onRefresh: () => void;
+  isScanning?: boolean;
 }): JSX.Element {
+  if (isScanning && summary.photoCount === 0) {
+    return (
+      <section className="quiet-state">
+        <RefreshCcw size={40} />
+        <h1>Checking library</h1>
+      </section>
+    );
+  }
+
   if (summary.photoCount === 0) {
     return (
       <section className="quiet-state">
@@ -849,13 +885,13 @@ function formatScanProgress(progress: ScanProgress, percent: number | undefined)
   if (progress.phase === "discovering") {
     const folders = progress.foldersScanned ?? 0;
     const photos = progress.photosFound ?? 0;
-    return `${folders.toLocaleString()} folders checked · ${photos.toLocaleString()} photos found`;
+    return `${folders.toLocaleString()} folders checked - ${photos.toLocaleString()} photos found`;
   }
 
   if (progress.phase === "reading-metadata") {
     const processed = progress.photosProcessed ?? 0;
     const total = progress.totalPhotos ?? progress.photosFound ?? 0;
-    const suffix = percent === undefined ? "" : ` · ${percent}%`;
+    const suffix = percent === undefined ? "" : ` - ${percent}%`;
     return `${processed.toLocaleString()} / ${total.toLocaleString()} photos processed${suffix}`;
   }
 
