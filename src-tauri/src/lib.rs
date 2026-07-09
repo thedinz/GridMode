@@ -15,6 +15,7 @@ use std::{
 };
 use tauri::{http, AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 const LIBRARY_INDEX_VERSION: u32 = 1;
 const IMAGE_CACHE_VERSION: &str = "v2-rust-jpeg";
@@ -97,6 +98,15 @@ static IMAGE_RENDER_QUEUE: OnceLock<ImageRenderQueue> = OnceLock::new();
 
 struct GridModeState {
     inner: Mutex<StateData>,
+}
+
+struct PendingUpdateState {
+    inner: Mutex<Option<PendingUpdate>>,
+}
+
+struct PendingUpdate {
+    update: Update,
+    bytes: Option<Vec<u8>>,
 }
 
 #[derive(Default)]
@@ -598,21 +608,173 @@ fn photo_get_details(
 }
 
 #[tauri::command]
-fn updates_check(app: AppHandle) -> Result<UpdateStatus, String> {
-    let status = updates_disabled_status();
-    let _ = app.emit("updates:status", status.clone());
+async fn updates_check(
+    app: AppHandle,
+    pending_update: State<'_, PendingUpdateState>,
+) -> Result<UpdateStatus, String> {
+    emit_update_status(&app, updates_checking_status());
+
+    let updater = match app.updater() {
+        Ok(updater) => updater,
+        Err(error) => {
+            let status = updates_error_status(format!("Could not start updater: {error}"));
+            emit_update_status(&app, status.clone());
+            return Ok(status);
+        }
+    };
+
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let status = updates_available_status(&update);
+            let mut pending = pending_update.inner.lock().map_err(lock_error)?;
+            *pending = Some(PendingUpdate {
+                update,
+                bytes: None,
+            });
+            emit_update_status(&app, status.clone());
+            Ok(status)
+        }
+        Ok(None) => {
+            let mut pending = pending_update.inner.lock().map_err(lock_error)?;
+            *pending = None;
+            let status = updates_not_available_status();
+            emit_update_status(&app, status.clone());
+            Ok(status)
+        }
+        Err(error) => {
+            let status = updates_error_status(format!("Update check failed: {error}"));
+            emit_update_status(&app, status.clone());
+            Ok(status)
+        }
+    }
+}
+
+#[tauri::command]
+async fn updates_download(
+    app: AppHandle,
+    pending_update: State<'_, PendingUpdateState>,
+) -> Result<UpdateStatus, String> {
+    let update = {
+        let pending = pending_update.inner.lock().map_err(lock_error)?;
+        pending.as_ref().map(|pending| pending.update.clone())
+    };
+
+    let update = if let Some(update) = update {
+        update
+    } else {
+        emit_update_status(&app, updates_checking_status());
+        let updater = match app.updater() {
+            Ok(updater) => updater,
+            Err(error) => {
+                let status = updates_error_status(format!("Could not start updater: {error}"));
+                emit_update_status(&app, status.clone());
+                return Ok(status);
+            }
+        };
+
+        match updater.check().await {
+            Ok(Some(update)) => update,
+            Ok(None) => {
+                let mut pending = pending_update.inner.lock().map_err(lock_error)?;
+                *pending = None;
+                let status = updates_not_available_status();
+                emit_update_status(&app, status.clone());
+                return Ok(status);
+            }
+            Err(error) => {
+                let status = updates_error_status(format!("Update check failed: {error}"));
+                emit_update_status(&app, status.clone());
+                return Ok(status);
+            }
+        }
+    };
+
+    emit_update_status(&app, updates_downloading_status(&update, Some(0.0)));
+
+    let progress_app = app.clone();
+    let progress_version = update.version.clone();
+    let mut downloaded = 0_u64;
+    let bytes = match update
+        .download(
+            |chunk_length, content_length| {
+                downloaded += chunk_length as u64;
+                let percent = content_length
+                    .filter(|total| *total > 0)
+                    .map(|total| (downloaded as f64 / total as f64) * 100.0);
+                let _ = progress_app.emit(
+                    "updates:status",
+                    UpdateStatus {
+                        state: "downloading".to_string(),
+                        version: Some(progress_version.clone()),
+                        message: Some("Downloading update...".to_string()),
+                        percent,
+                        download_url: None,
+                        manual_download: None,
+                    },
+                );
+            },
+            || {},
+        )
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let status = updates_error_status(format!("Update download failed: {error}"));
+            emit_update_status(&app, status.clone());
+            return Ok(status);
+        }
+    };
+
+    let status = updates_downloaded_status(&update);
+    let mut pending = pending_update.inner.lock().map_err(lock_error)?;
+    *pending = Some(PendingUpdate {
+        update,
+        bytes: Some(bytes),
+    });
+    emit_update_status(&app, status.clone());
     Ok(status)
 }
 
 #[tauri::command]
-fn updates_download(app: AppHandle) -> Result<UpdateStatus, String> {
-    let status = updates_disabled_status();
-    let _ = app.emit("updates:status", status.clone());
-    Ok(status)
-}
+fn updates_install(
+    app: AppHandle,
+    pending_update: State<'_, PendingUpdateState>,
+) -> Result<UpdateStatus, String> {
+    let pending = {
+        let pending = pending_update.inner.lock().map_err(lock_error)?;
+        pending.as_ref().and_then(|pending| {
+            pending
+                .bytes
+                .as_ref()
+                .map(|bytes| (pending.update.clone(), bytes.clone()))
+        })
+    };
 
-#[tauri::command]
-fn updates_install() {}
+    let Some((update, bytes)) = pending else {
+        let status = updates_error_status("No downloaded update is ready to install.");
+        emit_update_status(&app, status.clone());
+        return Ok(status);
+    };
+
+    emit_update_status(&app, updates_installing_status(&update));
+
+    match update.install(bytes) {
+        Ok(()) => {
+            {
+                let mut pending = pending_update.inner.lock().map_err(lock_error)?;
+                *pending = None;
+            }
+            let status = updates_installed_status(&update);
+            emit_update_status(&app, status.clone());
+            app.restart()
+        }
+        Err(error) => {
+            let status = updates_error_status(format!("Update install failed: {error}"));
+            emit_update_status(&app, status.clone());
+            Ok(status)
+        }
+    }
+}
 
 fn ensure_library_locked(app: &AppHandle, data: &mut StateData) -> Result<LibrarySummary, String> {
     let root_dirs = get_photo_directories(&data.settings);
@@ -1695,9 +1857,15 @@ fn is_inside_any_directory(root_dirs: &[String], file_path: &str) -> bool {
 }
 
 fn is_inside_directory(root_dir: &str, file_path: &str) -> bool {
-    let root = normalize_path_buf(root_dir);
-    let file = normalize_path_buf(file_path);
-    file == root || file.starts_with(root)
+    let root = normalize_path_string(root_dir);
+    let file = normalize_path_string(file_path);
+    if cfg!(target_os = "windows") {
+        let root = root.to_lowercase();
+        let file = file.to_lowercase();
+        file == root || Path::new(&file).starts_with(Path::new(&root))
+    } else {
+        file == root || Path::new(&file).starts_with(Path::new(&root))
+    }
 }
 
 fn same_directory(left: &str, right: &str) -> bool {
@@ -1728,7 +1896,19 @@ fn normalize_path_buf(path: &str) -> PathBuf {
 }
 
 fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
+    strip_windows_verbatim_prefix(&path.to_string_lossy())
+}
+
+fn strip_windows_verbatim_prefix(path: &str) -> String {
+    if let Some(path) = path.strip_prefix("\\\\?\\UNC\\") {
+        format!("\\\\{path}")
+    } else if let Some(path) = path.strip_prefix("\\\\?\\") {
+        path.to_string()
+    } else if let Some(path) = path.strip_prefix("\\??\\") {
+        path.to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 fn format_root_summary(root_dirs: &[String]) -> Option<String> {
@@ -1815,15 +1995,96 @@ fn empty_progress() -> ScanProgress {
     }
 }
 
-fn updates_disabled_status() -> UpdateStatus {
+fn updates_checking_status() -> UpdateStatus {
     UpdateStatus {
-        state: "idle".to_string(),
+        state: "checking".to_string(),
         version: None,
-        message: Some("Automatic updates are not configured in this build yet.".to_string()),
+        message: Some("Checking for updates...".to_string()),
         percent: None,
         download_url: None,
         manual_download: None,
     }
+}
+
+fn updates_not_available_status() -> UpdateStatus {
+    UpdateStatus {
+        state: "not-available".to_string(),
+        version: None,
+        message: Some("GridMode is up to date.".to_string()),
+        percent: None,
+        download_url: None,
+        manual_download: None,
+    }
+}
+
+fn updates_available_status(update: &Update) -> UpdateStatus {
+    UpdateStatus {
+        state: "available".to_string(),
+        version: Some(update.version.clone()),
+        message: Some("A GridMode update is ready to download.".to_string()),
+        percent: None,
+        download_url: Some(update.download_url.to_string()),
+        manual_download: None,
+    }
+}
+
+fn updates_downloading_status(update: &Update, percent: Option<f64>) -> UpdateStatus {
+    UpdateStatus {
+        state: "downloading".to_string(),
+        version: Some(update.version.clone()),
+        message: Some("Downloading update...".to_string()),
+        percent,
+        download_url: None,
+        manual_download: None,
+    }
+}
+
+fn updates_downloaded_status(update: &Update) -> UpdateStatus {
+    UpdateStatus {
+        state: "downloaded".to_string(),
+        version: Some(update.version.clone()),
+        message: Some("Update downloaded. Install it to finish updating GridMode.".to_string()),
+        percent: Some(100.0),
+        download_url: None,
+        manual_download: None,
+    }
+}
+
+fn updates_installing_status(update: &Update) -> UpdateStatus {
+    UpdateStatus {
+        state: "downloaded".to_string(),
+        version: Some(update.version.clone()),
+        message: Some("Installing update...".to_string()),
+        percent: Some(100.0),
+        download_url: None,
+        manual_download: None,
+    }
+}
+
+fn updates_installed_status(update: &Update) -> UpdateStatus {
+    UpdateStatus {
+        state: "downloaded".to_string(),
+        version: Some(update.version.clone()),
+        message: Some("Update installed. Restarting GridMode...".to_string()),
+        percent: Some(100.0),
+        download_url: None,
+        manual_download: None,
+    }
+}
+
+fn updates_error_status(message: impl Into<String>) -> UpdateStatus {
+    UpdateStatus {
+        state: "error".to_string(),
+        version: None,
+        message: Some(message.into()),
+        percent: None,
+        download_url: None,
+        manual_download: None,
+    }
+}
+
+fn emit_update_status(app: &AppHandle, status: UpdateStatus) {
+    let _ = app.emit("updates:status", status);
 }
 
 fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
@@ -1841,6 +2102,7 @@ pub fn run() {
             });
         })
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1853,6 +2115,9 @@ pub fn run() {
             let data = StateData::load(app.handle()).map_err(std::io::Error::other)?;
             app.manage(GridModeState {
                 inner: Mutex::new(data),
+            });
+            app.manage(PendingUpdateState {
+                inner: Mutex::new(None),
             });
             Ok(())
         })

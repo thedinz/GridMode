@@ -13,7 +13,8 @@
     "dist": "tauri build",
     "dist:win": "tauri build --bundles nsis",
     "dist:mac": "tauri build --bundles dmg",
-    "release:win": "pnpm dist:win && node scripts/create-electron-updater-yml.mjs",
+    "release:win": "pnpm dist:win",
+    "release:updater-json": "node scripts/create-tauri-updater-json.mjs",
     "stamp-version": "node scripts/stamp-version.mjs",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

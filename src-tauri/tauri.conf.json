@@ -33,6 +33,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "publisher": "thedinz",
     "homepage": "https://github.com/thedinz/GridMode",
     "targets": [
@@ -51,6 +52,17 @@
     },
     "android": {
       "debugApplicationIdSuffix": ".debug"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE2QkQ3QUQ4NkUxNzFGN0IKUldSN0h4ZHUySHE5RnV3Wk5rS1YwQnk5eFZjblFabmc1WVdHUWNYcXlqZDNldHZvdXlqRTRqMVkK",
+      "endpoints": [
+        "https://github.com/thedinz/GridMode/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

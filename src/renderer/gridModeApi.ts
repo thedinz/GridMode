@@ -141,9 +141,7 @@ function createTauriApi(): GridModeApi {
     updates: {
       check: () => invoke<UpdateStatus>("updates_check"),
       download: () => invoke<UpdateStatus>("updates_download"),
-      install: () => {
-        void invoke("updates_install");
-      },
+      install: () => invoke<UpdateStatus>("updates_install"),
       onStatus: (callback: (status: UpdateStatus) => void) => subscribe("updates:status", callback)
     }
   };

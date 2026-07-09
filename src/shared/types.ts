@@ -125,7 +125,7 @@ export interface GridModeApi {
   updates: {
     check: () => Promise<UpdateStatus>;
     download: () => Promise<UpdateStatus>;
-    install: () => void;
+    install: () => Promise<UpdateStatus>;
     onStatus: (callback: (status: UpdateStatus) => void) => () => void;
   };
 }
