@@ -101,6 +101,35 @@ export interface PhotoDetails {
   exif: ExifRow[];
 }
 
+export interface GridModeApi {
+  settings: {
+    get: () => Promise<SettingsPayload>;
+    chooseRoot: () => Promise<SettingsPayload>;
+    addRoot: () => Promise<SettingsPayload>;
+    removeRoot: (rootPath: string) => Promise<SettingsPayload>;
+    clearCache: () => Promise<SettingsPayload>;
+    chooseExclusion: () => Promise<SettingsPayload>;
+    removeExclusion: (excludedPath: string) => Promise<SettingsPayload>;
+  };
+  library: {
+    scan: (force?: boolean) => Promise<LibrarySummary>;
+    getHome: () => Promise<HomePayload>;
+    getYears: () => Promise<LibrarySummary>;
+    getYear: (year: number) => Promise<YearPayload>;
+    getMonth: (year: number, month: number) => Promise<MonthPayload>;
+    onProgress: (callback: (progress: ScanProgress) => void) => () => void;
+  };
+  photo: {
+    getDetails: (photoPath: string) => Promise<PhotoDetails>;
+  };
+  updates: {
+    check: () => Promise<UpdateStatus>;
+    download: () => Promise<UpdateStatus>;
+    install: () => void;
+    onStatus: (callback: (status: UpdateStatus) => void) => () => void;
+  };
+}
+
 export type UpdateState =
   | "idle"
   | "checking"

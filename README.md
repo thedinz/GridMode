@@ -10,8 +10,8 @@ GridMode is a Windows and macOS desktop photo viewer for people who already like
 - Persistent library indexing so startup can reuse cached metadata and only process new or modified photos.
 - Library view grouped by year, then month, using EXIF dates with file modified time as a fallback.
 - Settings view for choosing, adding, rescanning, excluding photo locations, and clearing generated caches.
-- Windows NSIS and macOS DMG/ZIP installers built with Electron Builder.
-- Auto-update plumbing through GitHub releases.
+- Windows NSIS and macOS DMG installers built with Tauri.
+- Migration release support for existing Windows Electron installs through GitHub Releases.
 
 ## Supported Images
 
@@ -31,6 +31,7 @@ pnpm dist:win
 ```
 
 The installer is written to `release/`.
+The Tauri installer is written under `src-tauri/target/release/bundle/nsis/`.
 
 ## Build A Mac Installer
 
@@ -38,12 +39,12 @@ The installer is written to `release/`.
 pnpm dist:mac
 ```
 
-The unsigned DMG, ZIP, blockmaps, and `latest-mac.yml` are written to `release/`. The DMG is uploaded to GitHub Releases for manual macOS downloads.
+The unsigned DMG is written under `src-tauri/target/release/bundle/dmg/`. The DMG is uploaded to GitHub Releases for manual macOS downloads.
 
 ## Updates
 
-Installed builds check GitHub releases for updates on startup and from the Settings page. The included GitHub Actions workflow publishes a new Windows release for every push to `main` by assigning the build a run-based version such as `0.1.42`.
+The first Tauri Windows release also publishes an Electron-compatible `latest.yml` beside the Tauri NSIS installer. Existing Windows Electron installs use that file to discover and download the migration installer.
 
-Windows builds use automatic update downloads and installs. macOS builds are unsigned, so they show an update notice with a GitHub Releases download link instead of installing updates automatically.
+After the migration release, future automatic updates should move to Tauri updater artifacts and signing keys. macOS builds are unsigned, so they stay on the manual GitHub Releases download path until Developer ID signing and notarization are configured.
 
 Local unsigned installers are fine for early testing. Production-ready macOS builds need Developer ID signing and notarization, and a production-ready Windows build should eventually add code signing.

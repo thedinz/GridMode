@@ -1,7 +1,7 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { GridModeApi } from "../preload/preload";
 import type {
+  GridModeApi,
   HomePayload,
   LibrarySummary,
   MonthPayload,
@@ -19,11 +19,33 @@ function isTauriRuntime(): boolean {
   return Boolean(window.__TAURI_INTERNALS__);
 }
 
+function encodePathToken(filePath: string): string {
+  const bytes = new TextEncoder().encode(filePath);
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function makeTauriPhotoUrl(filePath: string, variant: "display" | "thumb"): string {
+  return `gridmode-photo://${variant}/${encodePathToken(filePath)}`;
+}
+
+function isGridModePhotoUrl(value: string): boolean {
+  return value.startsWith("gridmode-photo://");
+}
+
 function convertPhoto(photo: PhotoAsset): PhotoAsset {
   return {
     ...photo,
-    url: convertFileSrc(photo.path),
-    thumbnailUrl: convertFileSrc(photo.path)
+    url: isGridModePhotoUrl(photo.url) ? photo.url : makeTauriPhotoUrl(photo.path, "display"),
+    thumbnailUrl: isGridModePhotoUrl(photo.thumbnailUrl)
+      ? photo.thumbnailUrl
+      : makeTauriPhotoUrl(photo.path, "thumb")
   };
 }
 
@@ -86,7 +108,7 @@ function subscribe<T>(eventName: string, callback: (payload: T) => void): Unsubs
       stop();
     }
   }).catch(() => {
-    // The installed Electron build never reaches this adapter branch.
+    // Event subscriptions can reject while the Tauri bridge is still booting.
   });
 
   return () => {

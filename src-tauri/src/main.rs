@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    gridmode_tauri_spike_lib::run();
+    gridmode_lib::run();
 }

@@ -29,20 +29,56 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Stamp CI version
-        shell: pwsh
-        run: |
-          node -e "const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=process.env.GRIDMODE_VERSION; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
-        env:
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build and publish
+      - name: Stamp CI version
+        shell: pwsh
+        run: pnpm stamp-version $env:GRIDMODE_VERSION
+        env:
+          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
+
+      - name: Build Windows installer
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: pnpm release:win
+
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
+        run: |
+          $tag = "v$env:GRIDMODE_VERSION"
+          gh release view $tag --repo thedinz/GridMode
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "GridMode $env:GRIDMODE_VERSION" --notes "GridMode $env:GRIDMODE_VERSION" --repo thedinz/GridMode --latest
+          }
+
+      - name: Upload Windows installer and updater metadata
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
+        run: |
+          $tag = "v$env:GRIDMODE_VERSION"
+          $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "No Tauri NSIS installer was produced."
+          }
+          gh release upload $tag $installer.FullName "src-tauri/target/release/bundle/nsis/latest.yml" --clobber --repo thedinz/GridMode
+
+      - name: Upload Windows workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GridMode-windows-tauri
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/nsis/latest.yml
+          if-no-files-found: error
 
   mac:
     name: Build and publish Mac download
@@ -64,15 +100,16 @@ jobs:
           node-version: 24
           cache: pnpm
 
-      - name: Stamp CI version
-        shell: bash
-        run: |
-          node -e "const fs=require('fs'); const pkg=JSON.parse(fs.readFileSync('package.json','utf8')); pkg.version=process.env.GRIDMODE_VERSION; fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');"
-        env:
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Stamp CI version
+        run: pnpm stamp-version "$GRIDMODE_VERSION"
+        env:
+          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
 
       - name: Build unsigned Mac download
         run: pnpm dist:mac
@@ -81,12 +118,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GRIDMODE_VERSION: 0.1.${{ github.run_number }}
-        run: gh release upload "v${GRIDMODE_VERSION}" release/*.dmg --clobber --repo thedinz/GridMode
+        run: gh release upload "v${GRIDMODE_VERSION}" src-tauri/target/release/bundle/dmg/*.dmg --clobber --repo thedinz/GridMode
 
       - name: Upload Mac workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: GridMode-mac-unsigned
           path: |
-            release/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: error

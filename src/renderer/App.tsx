@@ -57,6 +57,10 @@ const initialSummary: LibrarySummary = {
   warnings: []
 };
 
+const initialMonthPhotoLimit = 240;
+const monthPhotoLimitIncrement = 240;
+const photoSectionPreviewLimit = 12;
+
 interface LoadHomeOptions {
   label?: string;
   rootDir?: string;
@@ -743,6 +747,16 @@ function MonthView({
   onBack: () => void;
   onOpenPhoto: (photo: PhotoAsset) => void;
 }): JSX.Element {
+  const photos = payload?.photos ?? [];
+  const [visiblePhotoCount, setVisiblePhotoCount] = useState(initialMonthPhotoLimit);
+
+  useEffect(() => {
+    setVisiblePhotoCount(initialMonthPhotoLimit);
+  }, [payload?.year, payload?.month, photos.length]);
+
+  const visiblePhotos = photos.slice(0, visiblePhotoCount);
+  const remainingPhotos = Math.max(0, photos.length - visiblePhotos.length);
+
   return (
     <section className="view-stack">
       <div className="view-heading">
@@ -759,9 +773,17 @@ function MonthView({
         </button>
       </div>
       <PhotoGrid
-        photos={payload?.photos ?? []}
+        photos={visiblePhotos}
         onOpenPhoto={onOpenPhoto}
       />
+      {remainingPhotos > 0 ? (
+        <button
+          className="text-button load-more-button"
+          onClick={() => setVisiblePhotoCount((current) => current + monthPhotoLimitIncrement)}
+        >
+          <span>Show {Math.min(monthPhotoLimitIncrement, remainingPhotos).toLocaleString()} more</span>
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -1010,6 +1032,8 @@ function PhotoSection({
   onOpenSection: () => void;
   onOpenPhoto: (photo: PhotoAsset) => void;
 }): JSX.Element {
+  const previewPhotos = photos.slice(0, photoSectionPreviewLimit);
+
   return (
     <section className="photo-section">
       <button
@@ -1020,7 +1044,7 @@ function PhotoSection({
         <small>{count.toLocaleString()} photos</small>
       </button>
       <PhotoStrip
-        photos={photos}
+        photos={previewPhotos}
         onOpenPhoto={onOpenPhoto}
       />
     </section>

@@ -1,4 +1,4 @@
-import type { GridModeApi } from "../preload/preload";
+import type { GridModeApi } from "../shared/types";
 
 declare global {
   interface Window {

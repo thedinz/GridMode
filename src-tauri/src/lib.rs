@@ -1,17 +1,26 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use chrono::{DateTime, Datelike, SecondsFormat, Utc};
+use image::{
+    imageops::FilterType, io::Reader as ImageReader, ColorType, DynamicImage, GenericImageView,
+};
 use serde::{Deserialize, Serialize};
 use sha1::{Digest, Sha1};
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
+    io::BufWriter,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{Condvar, Mutex, OnceLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{http, AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 const LIBRARY_INDEX_VERSION: u32 = 1;
+const IMAGE_CACHE_VERSION: &str = "v2-rust-jpeg";
+const THUMBNAIL_SIZE: u32 = 420;
+const DISPLAY_MAX_DIMENSION: u32 = 3840;
+const IMAGE_RENDER_JOB_LIMIT: usize = 1;
 
 const MONTH_NAMES: [&str; 12] = [
     "January",
@@ -32,6 +41,59 @@ const SUPPORTED_EXTENSIONS: [&str; 13] = [
     "jpg", "jpeg", "jpe", "jfif", "png", "webp", "gif", "bmp", "tif", "tiff", "heic", "heif",
     "avif",
 ];
+
+const BROWSER_NATIVE_EXTENSIONS: [&str; 9] = [
+    "jpg", "jpeg", "jpe", "jfif", "png", "webp", "gif", "bmp", "avif",
+];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PhotoRenderVariant {
+    Image,
+    Display,
+    Thumb,
+}
+
+struct ImageRenderQueue {
+    state: Mutex<ImageRenderQueueState>,
+    available: Condvar,
+}
+
+#[derive(Default)]
+struct ImageRenderQueueState {
+    active: usize,
+}
+
+struct ImageRenderPermit<'a> {
+    queue: &'a ImageRenderQueue,
+}
+
+impl ImageRenderQueue {
+    fn acquire(&self) -> ImageRenderPermit<'_> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        while state.active >= IMAGE_RENDER_JOB_LIMIT {
+            state = self
+                .available
+                .wait(state)
+                .unwrap_or_else(|error| error.into_inner());
+        }
+        state.active += 1;
+        ImageRenderPermit { queue: self }
+    }
+}
+
+impl Drop for ImageRenderPermit<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .queue
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        state.active = state.active.saturating_sub(1);
+        self.queue.available.notify_one();
+    }
+}
+
+static IMAGE_RENDER_QUEUE: OnceLock<ImageRenderQueue> = OnceLock::new();
 
 struct GridModeState {
     inner: Mutex<StateData>,
@@ -537,14 +599,14 @@ fn photo_get_details(
 
 #[tauri::command]
 fn updates_check(app: AppHandle) -> Result<UpdateStatus, String> {
-    let status = tauri_spike_update_status();
+    let status = updates_disabled_status();
     let _ = app.emit("updates:status", status.clone());
     Ok(status)
 }
 
 #[tauri::command]
 fn updates_download(app: AppHandle) -> Result<UpdateStatus, String> {
-    let status = tauri_spike_update_status();
+    let status = updates_disabled_status();
     let _ = app.emit("updates:status", status.clone());
     Ok(status)
 }
@@ -860,8 +922,8 @@ fn build_photo_asset(
         directory,
         extension,
         size: stat.size,
-        url: file_path.to_string(),
-        thumbnail_url: file_path.to_string(),
+        url: make_photo_url(file_path, PhotoRenderVariant::Display),
+        thumbnail_url: make_photo_url(file_path, PhotoRenderVariant::Thumb),
         captured_at: captured.to_rfc3339_opts(SecondsFormat::Millis, true),
         date_source: "file".to_string(),
         year: captured.year(),
@@ -894,8 +956,8 @@ fn refresh_cached_photo_asset(photo: &PhotoAsset, snapshot: &PhotoFileSnapshot) 
         .unwrap_or_default()
         .to_lowercase();
     next.size = snapshot.size;
-    next.url = snapshot.path.clone();
-    next.thumbnail_url = snapshot.path.clone();
+    next.url = make_photo_url(&snapshot.path, PhotoRenderVariant::Display);
+    next.thumbnail_url = make_photo_url(&snapshot.path, PhotoRenderVariant::Thumb);
     next
 }
 
@@ -998,6 +1060,329 @@ fn format_scan_complete_message(
         parts.push(format!("{} removed", removed));
     }
     parts.join(" - ")
+}
+
+fn handle_photo_protocol_request(app: &AppHandle, uri_text: &str) -> http::Response<Vec<u8>> {
+    let (variant, file_path) = match parse_photo_protocol_request(uri_text) {
+        Ok(request) => request,
+        Err(error) => return text_response(http::StatusCode::BAD_REQUEST, &error),
+    };
+
+    if let Err((status, message)) = validate_photo_request(app, &file_path) {
+        return text_response(status, &message);
+    }
+
+    match read_photo_response(app, &file_path, variant) {
+        Ok((bytes, content_type, immutable)) => binary_response(bytes, &content_type, immutable),
+        Err(error) => text_response(http::StatusCode::INTERNAL_SERVER_ERROR, &error),
+    }
+}
+
+fn parse_photo_protocol_request(uri_text: &str) -> Result<(PhotoRenderVariant, String), String> {
+    let uri: http::Uri = uri_text
+        .parse()
+        .map_err(|error| format!("Unsupported photo URL: {}", error))?;
+    let authority = uri
+        .authority()
+        .map(|value| value.host())
+        .unwrap_or_default();
+    let path = uri.path().trim_start_matches('/');
+
+    let (variant_token, path_token) = if matches!(authority, "image" | "display" | "thumb") {
+        (authority, path)
+    } else {
+        let mut parts = path.splitn(2, '/');
+        let variant = parts.next().unwrap_or_default();
+        let token = parts.next().unwrap_or_default();
+        (variant, token)
+    };
+
+    let variant = match variant_token {
+        "image" => PhotoRenderVariant::Image,
+        "display" => PhotoRenderVariant::Display,
+        "thumb" => PhotoRenderVariant::Thumb,
+        _ => return Err("Unsupported photo request variant.".to_string()),
+    };
+
+    if path_token.is_empty() {
+        return Err("Photo request did not include a file path.".to_string());
+    }
+
+    Ok((variant, decode_path_token(path_token)?))
+}
+
+fn validate_photo_request(
+    app: &AppHandle,
+    file_path: &str,
+) -> Result<(), (http::StatusCode, String)> {
+    let state = app.state::<GridModeState>();
+    let data = state.inner.lock().map_err(|_| {
+        (
+            http::StatusCode::INTERNAL_SERVER_ERROR,
+            "GridMode state lock was poisoned.".to_string(),
+        )
+    })?;
+    let root_dirs = get_photo_directories(&data.settings);
+    if root_dirs.is_empty() || !is_inside_any_directory(&root_dirs, file_path) {
+        return Err((
+            http::StatusCode::FORBIDDEN,
+            "Photo is outside the configured library.".to_string(),
+        ));
+    }
+
+    if is_path_excluded(file_path, &data.settings.excluded_directories) {
+        return Err((
+            http::StatusCode::FORBIDDEN,
+            "Photo is in an excluded folder.".to_string(),
+        ));
+    }
+
+    if !is_supported_photo_path(Path::new(file_path)) {
+        return Err((
+            http::StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "Photo format is not supported.".to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn read_photo_response(
+    app: &AppHandle,
+    file_path: &str,
+    variant: PhotoRenderVariant,
+) -> Result<(Vec<u8>, String, bool), String> {
+    if variant == PhotoRenderVariant::Thumb {
+        let cached_path = get_cached_render_path(app, file_path, variant)?;
+        let bytes = fs::read(cached_path).map_err(|error| error.to_string())?;
+        return Ok((bytes, "image/jpeg".to_string(), true));
+    }
+
+    if variant == PhotoRenderVariant::Display && needs_rendered_display(file_path) {
+        let cached_path = get_cached_render_path(app, file_path, variant)?;
+        let bytes = fs::read(cached_path).map_err(|error| error.to_string())?;
+        return Ok((bytes, "image/jpeg".to_string(), true));
+    }
+
+    let bytes = fs::read(file_path).map_err(|error| error.to_string())?;
+    Ok((bytes, mime_type_for_path(file_path).to_string(), false))
+}
+
+fn get_cached_render_path(
+    app: &AppHandle,
+    file_path: &str,
+    variant: PhotoRenderVariant,
+) -> Result<PathBuf, String> {
+    let metadata = fs::metadata(file_path).map_err(|error| error.to_string())?;
+    let data_dir = app_data_dir(app)?;
+    let output_path = image_cache_file_path(&data_dir, file_path, &metadata, variant);
+
+    if output_path.exists() {
+        return Ok(output_path);
+    }
+
+    let _permit = image_render_queue().acquire();
+    if output_path.exists() {
+        return Ok(output_path);
+    }
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let temp_path = temp_image_cache_file_path(&output_path);
+    render_image(file_path, &temp_path, variant).inspect_err(|_| {
+        let _ = fs::remove_file(&temp_path);
+    })?;
+    fs::rename(&temp_path, &output_path).map_err(|error| error.to_string())?;
+    Ok(output_path)
+}
+
+fn image_render_queue() -> &'static ImageRenderQueue {
+    IMAGE_RENDER_QUEUE.get_or_init(|| ImageRenderQueue {
+        state: Mutex::new(ImageRenderQueueState::default()),
+        available: Condvar::new(),
+    })
+}
+
+fn image_cache_file_path(
+    data_dir: &Path,
+    file_path: &str,
+    metadata: &fs::Metadata,
+    variant: PhotoRenderVariant,
+) -> PathBuf {
+    let mut hasher = Sha1::new();
+    hasher.update(IMAGE_CACHE_VERSION.as_bytes());
+    hasher.update([0]);
+    hasher.update(photo_render_variant_token(variant).as_bytes());
+    hasher.update([0]);
+    hasher.update(file_path.as_bytes());
+    hasher.update([0]);
+    hasher.update(metadata.len().to_string().as_bytes());
+    hasher.update([0]);
+    hasher.update(metadata_modified_ms(metadata).to_string().as_bytes());
+    let hash = format!("{:x}", hasher.finalize());
+
+    image_cache_path(data_dir)
+        .join(photo_render_variant_token(variant))
+        .join(&hash[..2])
+        .join(format!("{}.jpg", hash))
+}
+
+fn temp_image_cache_file_path(output_path: &Path) -> PathBuf {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or(0);
+    let file_name = output_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("render.jpg");
+    output_path.with_file_name(format!("{}.{}.tmp", file_name, stamp))
+}
+
+fn render_image(
+    file_path: &str,
+    output_path: &Path,
+    variant: PhotoRenderVariant,
+) -> Result<(), String> {
+    let image = ImageReader::open(file_path)
+        .map_err(|error| error.to_string())?
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?
+        .decode()
+        .map_err(|error| error.to_string())?;
+    let rendered = match variant {
+        PhotoRenderVariant::Thumb => resize_to_cover(image, THUMBNAIL_SIZE),
+        PhotoRenderVariant::Display | PhotoRenderVariant::Image => {
+            resize_inside(image, DISPLAY_MAX_DIMENSION)
+        }
+    };
+    write_jpeg(output_path, &rendered, jpeg_quality_for_variant(variant))
+}
+
+fn resize_to_cover(image: DynamicImage, size: u32) -> DynamicImage {
+    let (width, height) = image.dimensions();
+    if width <= size && height <= size {
+        return image;
+    }
+
+    let scale = (size as f64 / width as f64).max(size as f64 / height as f64);
+    let resized_width = ((width as f64 * scale).round() as u32).max(1);
+    let resized_height = ((height as f64 * scale).round() as u32).max(1);
+    let resized = image.resize(resized_width, resized_height, FilterType::Lanczos3);
+    let crop_width = resized_width.min(size);
+    let crop_height = resized_height.min(size);
+    let x = resized_width.saturating_sub(crop_width) / 2;
+    let y = resized_height.saturating_sub(crop_height) / 2;
+    resized.crop_imm(x, y, crop_width, crop_height)
+}
+
+fn resize_inside(image: DynamicImage, max_dimension: u32) -> DynamicImage {
+    let (width, height) = image.dimensions();
+    if width <= max_dimension && height <= max_dimension {
+        return image;
+    }
+    image.resize(max_dimension, max_dimension, FilterType::Lanczos3)
+}
+
+fn write_jpeg(output_path: &Path, image: &DynamicImage, quality: u8) -> Result<(), String> {
+    let file = fs::File::create(output_path).map_err(|error| error.to_string())?;
+    let mut writer = BufWriter::new(file);
+    let rgb = image.to_rgb8();
+    let (width, height) = rgb.dimensions();
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut writer, quality);
+    encoder
+        .encode(&rgb, width, height, ColorType::Rgb8)
+        .map_err(|error| error.to_string())
+}
+
+fn binary_response(bytes: Vec<u8>, content_type: &str, immutable: bool) -> http::Response<Vec<u8>> {
+    let cache_control = if immutable {
+        "public, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    };
+
+    http::Response::builder()
+        .status(http::StatusCode::OK)
+        .header(http::header::CONTENT_TYPE, content_type)
+        .header(http::header::CACHE_CONTROL, cache_control)
+        .body(bytes)
+        .unwrap_or_else(|_| http::Response::new(Vec::new()))
+}
+
+fn text_response(status: http::StatusCode, message: &str) -> http::Response<Vec<u8>> {
+    http::Response::builder()
+        .status(status)
+        .header(http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(message.as_bytes().to_vec())
+        .unwrap_or_else(|_| http::Response::new(Vec::new()))
+}
+
+fn needs_rendered_display(file_path: &str) -> bool {
+    Path::new(file_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|extension| {
+            let normalized = extension.to_lowercase();
+            !BROWSER_NATIVE_EXTENSIONS.contains(&normalized.as_str())
+        })
+        .unwrap_or(true)
+}
+
+fn mime_type_for_path(file_path: &str) -> &'static str {
+    match Path::new(file_path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_lowercase())
+        .as_deref()
+    {
+        Some("jpg" | "jpeg" | "jpe" | "jfif") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("bmp") => "image/bmp",
+        Some("tif" | "tiff") => "image/tiff",
+        Some("heic") => "image/heic",
+        Some("heif") => "image/heif",
+        Some("avif") => "image/avif",
+        _ => "application/octet-stream",
+    }
+}
+
+fn make_photo_url(file_path: &str, variant: PhotoRenderVariant) -> String {
+    format!(
+        "gridmode-photo://{}/{}",
+        photo_render_variant_token(variant),
+        encode_path_token(file_path)
+    )
+}
+
+fn photo_render_variant_token(variant: PhotoRenderVariant) -> &'static str {
+    match variant {
+        PhotoRenderVariant::Image => "image",
+        PhotoRenderVariant::Display => "display",
+        PhotoRenderVariant::Thumb => "thumb",
+    }
+}
+
+fn jpeg_quality_for_variant(variant: PhotoRenderVariant) -> u8 {
+    match variant {
+        PhotoRenderVariant::Thumb => 78,
+        PhotoRenderVariant::Display | PhotoRenderVariant::Image => 88,
+    }
+}
+
+fn encode_path_token(file_path: &str) -> String {
+    URL_SAFE_NO_PAD.encode(file_path.as_bytes())
+}
+
+fn decode_path_token(token: &str) -> Result<String, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(token)
+        .map_err(|error| format!("Photo path token could not be decoded: {}", error))?;
+    String::from_utf8(bytes).map_err(|error| format!("Photo path was not UTF-8: {}", error))
 }
 
 fn clear_library_cache(app: &AppHandle, data: &mut StateData) -> Result<(), String> {
@@ -1393,11 +1778,11 @@ fn empty_progress() -> ScanProgress {
     }
 }
 
-fn tauri_spike_update_status() -> UpdateStatus {
+fn updates_disabled_status() -> UpdateStatus {
     UpdateStatus {
         state: "idle".to_string(),
         version: None,
-        message: Some("Updates are disabled in this Tauri spike build.".to_string()),
+        message: Some("Automatic updates are not configured in this build yet.".to_string()),
         percent: None,
         download_url: None,
         manual_download: None,
@@ -1411,6 +1796,13 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .register_asynchronous_uri_scheme_protocol("gridmode-photo", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let uri = request.uri().to_string();
+            std::thread::spawn(move || {
+                responder.respond(handle_photo_protocol_request(&app, &uri));
+            });
+        })
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             if cfg!(debug_assertions) {
