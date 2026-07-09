@@ -19,9 +19,10 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 const LIBRARY_INDEX_VERSION: u32 = 1;
 const IMAGE_CACHE_VERSION: &str = "v2-rust-jpeg";
-const THUMBNAIL_SIZE: u32 = 420;
+const THUMBNAIL_SIZE: u32 = 320;
 const DISPLAY_MAX_DIMENSION: u32 = 3840;
-const IMAGE_RENDER_JOB_LIMIT: usize = 1;
+const MIN_IMAGE_RENDER_JOB_LIMIT: usize = 2;
+const MAX_IMAGE_RENDER_JOB_LIMIT: usize = 3;
 
 const MONTH_NAMES: [&str; 12] = [
     "January",
@@ -71,7 +72,8 @@ struct ImageRenderPermit<'a> {
 impl ImageRenderQueue {
     fn acquire(&self) -> ImageRenderPermit<'_> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        while state.active >= IMAGE_RENDER_JOB_LIMIT {
+        let job_limit = image_render_job_limit();
+        while state.active >= job_limit {
             state = self
                 .available
                 .wait(state)
@@ -611,13 +613,20 @@ fn photo_get_details(
 async fn updates_check(
     app: AppHandle,
     pending_update: State<'_, PendingUpdateState>,
+    automatic: Option<bool>,
 ) -> Result<UpdateStatus, String> {
-    emit_update_status(&app, updates_checking_status());
+    let automatic = automatic.unwrap_or(false);
+    if !automatic {
+        emit_update_status(&app, updates_checking_status());
+    }
 
     let updater = match app.updater() {
         Ok(updater) => updater,
         Err(error) => {
             let status = updates_error_status(format!("Could not start updater: {error}"));
+            if automatic {
+                return Ok(updates_idle_status());
+            }
             emit_update_status(&app, status.clone());
             return Ok(status);
         }
@@ -638,11 +647,17 @@ async fn updates_check(
             let mut pending = pending_update.inner.lock().map_err(lock_error)?;
             *pending = None;
             let status = updates_not_available_status();
+            if automatic {
+                return Ok(updates_idle_status());
+            }
             emit_update_status(&app, status.clone());
             Ok(status)
         }
         Err(error) => {
             let status = updates_error_status(format!("Update check failed: {error}"));
+            if automatic {
+                return Ok(updates_idle_status());
+            }
             emit_update_status(&app, status.clone());
             Ok(status)
         }
@@ -1404,6 +1419,17 @@ fn image_render_queue() -> &'static ImageRenderQueue {
     })
 }
 
+fn image_render_job_limit() -> usize {
+    std::thread::available_parallelism()
+        .map(|parallelism| {
+            parallelism
+                .get()
+                .saturating_sub(1)
+                .clamp(MIN_IMAGE_RENDER_JOB_LIMIT, MAX_IMAGE_RENDER_JOB_LIMIT)
+        })
+        .unwrap_or(MIN_IMAGE_RENDER_JOB_LIMIT)
+}
+
 fn image_cache_file_path(
     data_dir: &Path,
     file_path: &str,
@@ -1414,6 +1440,8 @@ fn image_cache_file_path(
     hasher.update(IMAGE_CACHE_VERSION.as_bytes());
     hasher.update([0]);
     hasher.update(photo_render_variant_token(variant).as_bytes());
+    hasher.update([0]);
+    hasher.update(cache_render_settings_token(variant).as_bytes());
     hasher.update([0]);
     hasher.update(file_path.as_bytes());
     hasher.update([0]);
@@ -1469,7 +1497,7 @@ fn resize_to_cover(image: DynamicImage, size: u32) -> DynamicImage {
     let scale = (size as f64 / width as f64).max(size as f64 / height as f64);
     let resized_width = ((width as f64 * scale).round() as u32).max(1);
     let resized_height = ((height as f64 * scale).round() as u32).max(1);
-    let resized = image.resize(resized_width, resized_height, FilterType::Lanczos3);
+    let resized = image.resize(resized_width, resized_height, FilterType::Triangle);
     let crop_width = resized_width.min(size);
     let crop_height = resized_height.min(size);
     let x = resized_width.saturating_sub(crop_width) / 2;
@@ -1568,8 +1596,27 @@ fn photo_render_variant_token(variant: PhotoRenderVariant) -> &'static str {
 
 fn jpeg_quality_for_variant(variant: PhotoRenderVariant) -> u8 {
     match variant {
-        PhotoRenderVariant::Thumb => 78,
+        PhotoRenderVariant::Thumb => 74,
         PhotoRenderVariant::Display | PhotoRenderVariant::Image => 88,
+    }
+}
+
+fn cache_render_settings_token(variant: PhotoRenderVariant) -> String {
+    match variant {
+        PhotoRenderVariant::Thumb => {
+            format!(
+                "thumb:{}:{}:triangle",
+                THUMBNAIL_SIZE,
+                jpeg_quality_for_variant(variant)
+            )
+        }
+        PhotoRenderVariant::Display | PhotoRenderVariant::Image => {
+            format!(
+                "display:{}:{}:lanczos3",
+                DISPLAY_MAX_DIMENSION,
+                jpeg_quality_for_variant(variant)
+            )
+        }
     }
 }
 
@@ -1992,6 +2039,17 @@ fn empty_progress() -> ScanProgress {
         total_photos: None,
         current_path: None,
         message: None,
+    }
+}
+
+fn updates_idle_status() -> UpdateStatus {
+    UpdateStatus {
+        state: "idle".to_string(),
+        version: None,
+        message: None,
+        percent: None,
+        download_url: None,
+        manual_download: None,
     }
 }
 

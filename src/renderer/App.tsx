@@ -14,7 +14,7 @@ import {
   Trash2,
   X
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GridModeLogo } from "./components/GridModeLogo";
 import { gridModeApi } from "./gridModeApi";
 import type {
@@ -60,6 +60,12 @@ const initialSummary: LibrarySummary = {
 const initialMonthPhotoLimit = 240;
 const monthPhotoLimitIncrement = 240;
 const photoSectionPreviewLimit = 12;
+const initialGridRenderCount = 96;
+const gridRenderBatchSize = 64;
+const eagerGridThumbnailCount = 48;
+const thumbnailLoadRootMargin = "700px 0px";
+const gridRenderRootMargin = "1000px 0px";
+const automaticUpdateCheckDelayMs = 4500;
 
 interface LoadHomeOptions {
   label?: string;
@@ -217,9 +223,13 @@ export function App(): JSX.Element {
         statusText: progress.message
       });
     });
+    const updateCheckTimer = window.setTimeout(() => {
+      void gridModeApi.updates.check({ automatic: true });
+    }, automaticUpdateCheckDelayMs);
 
     return () => {
       mounted = false;
+      window.clearTimeout(updateCheckTimer);
       unsubscribeUpdates();
       unsubscribeScan();
     };
@@ -1058,16 +1068,70 @@ function PhotoGrid({
   photos: PhotoAsset[];
   onOpenPhoto: (photo: PhotoAsset) => void;
 }): JSX.Element {
+  const [visibleCount, setVisibleCount] = useState(() => Math.min(photos.length, initialGridRenderCount));
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const gridResetKey = photos.slice(0, 8).map((photo) => photo.id).join(":");
+
+  useEffect(() => {
+    setVisibleCount(Math.min(photos.length, initialGridRenderCount));
+  }, [gridResetKey]);
+
+  useEffect(() => {
+    setVisibleCount((current) => {
+      const minimum = Math.min(photos.length, initialGridRenderCount);
+      return Math.min(Math.max(current, minimum), photos.length);
+    });
+  }, [photos.length]);
+
+  useEffect(() => {
+    if (visibleCount >= photos.length) {
+      return undefined;
+    }
+
+    const sentinel = sentinelRef.current;
+    if (!sentinel || !("IntersectionObserver" in window)) {
+      setVisibleCount((current) => Math.min(photos.length, current + gridRenderBatchSize));
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setVisibleCount((current) => Math.min(photos.length, current + gridRenderBatchSize));
+        }
+      },
+      { rootMargin: gridRenderRootMargin }
+    );
+
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [photos.length, visibleCount]);
+
+  const visiblePhotos = photos.slice(0, visibleCount);
+
   return (
-    <div className="photo-grid">
-      {photos.map((photo) => (
-        <PhotoTile
-          key={photo.id}
-          photo={photo}
-          onOpen={() => onOpenPhoto(photo)}
+    <>
+      <div className="photo-grid">
+        {visiblePhotos.map((photo, index) => (
+          <PhotoTile
+            key={photo.id}
+            photo={photo}
+            eager={index < eagerGridThumbnailCount}
+            onOpen={() => onOpenPhoto(photo)}
+          />
+        ))}
+      </div>
+      {visibleCount < photos.length ? (
+        <div
+          ref={sentinelRef}
+          className="photo-grid-sentinel"
+          aria-hidden="true"
         />
-      ))}
-    </div>
+      ) : null}
+    </>
   );
 }
 
@@ -1084,6 +1148,7 @@ function PhotoStrip({
         <PhotoTile
           key={photo.id}
           photo={photo}
+          eager
           onOpen={() => onOpenPhoto(photo)}
         />
       ))}
@@ -1091,19 +1156,74 @@ function PhotoStrip({
   );
 }
 
-function PhotoTile({ photo, onOpen }: { photo: PhotoAsset; onOpen: () => void }): JSX.Element {
+function PhotoTile({
+  photo,
+  eager = false,
+  onOpen
+}: {
+  photo: PhotoAsset;
+  eager?: boolean;
+  onOpen: () => void;
+}): JSX.Element {
+  const tileRef = useRef<HTMLButtonElement | null>(null);
+  const [shouldLoad, setShouldLoad] = useState(eager);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    setShouldLoad(eager);
+    setIsLoaded(false);
+  }, [eager, photo.thumbnailUrl]);
+
+  useEffect(() => {
+    if (shouldLoad) {
+      return undefined;
+    }
+
+    const tile = tileRef.current;
+    if (!tile || !("IntersectionObserver" in window)) {
+      setShouldLoad(true);
+      return undefined;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setShouldLoad(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: thumbnailLoadRootMargin }
+    );
+
+    observer.observe(tile);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [shouldLoad]);
+
   return (
     <button
+      ref={tileRef}
       className="photo-tile"
       onClick={onOpen}
       title={photo.name}
     >
-      <img
-        src={photo.thumbnailUrl}
-        alt={photo.name}
-        loading="lazy"
-        decoding="async"
-      />
+      {shouldLoad ? (
+        <img
+          className={isLoaded ? "loaded" : undefined}
+          src={photo.thumbnailUrl}
+          alt={photo.name}
+          loading={eager ? "eager" : "lazy"}
+          decoding="async"
+          onLoad={() => setIsLoaded(true)}
+        />
+      ) : (
+        <div
+          className="photo-tile-placeholder"
+          aria-hidden="true"
+        />
+      )}
       <span>
         <CalendarDays size={13} />
         {photo.year}

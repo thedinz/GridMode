@@ -123,7 +123,7 @@ export interface GridModeApi {
     getDetails: (photoPath: string) => Promise<PhotoDetails>;
   };
   updates: {
-    check: () => Promise<UpdateStatus>;
+    check: (options?: { automatic?: boolean }) => Promise<UpdateStatus>;
     download: () => Promise<UpdateStatus>;
     install: () => Promise<UpdateStatus>;
     onStatus: (callback: (status: UpdateStatus) => void) => () => void;

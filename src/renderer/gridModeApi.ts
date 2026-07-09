@@ -139,7 +139,7 @@ function createTauriApi(): GridModeApi {
         convertPhotoDetails(await invoke<PhotoDetails>("photo_get_details", { photoPath }))
     },
     updates: {
-      check: () => invoke<UpdateStatus>("updates_check"),
+      check: (options = {}) => invoke<UpdateStatus>("updates_check", options),
       download: () => invoke<UpdateStatus>("updates_download"),
       install: () => invoke<UpdateStatus>("updates_install"),
       onStatus: (callback: (status: UpdateStatus) => void) => subscribe("updates:status", callback)
