@@ -12,7 +12,7 @@
     "typecheck": "tsc -p tsconfig.renderer.json --pretty",
     "dist": "tauri build",
     "dist:win": "tauri build --bundles nsis",
-    "dist:mac": "tauri build --bundles dmg",
+    "dist:mac": "tauri build --bundles dmg,app",
     "release:win": "pnpm dist:win",
     "release:updater-json": "node scripts/create-tauri-updater-json.mjs",
     "stamp-version": "node scripts/stamp-version.mjs",
