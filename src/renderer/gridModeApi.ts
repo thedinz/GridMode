@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   GridModeApi,
@@ -32,20 +32,14 @@ function encodePathToken(filePath: string): string {
 }
 
 function makeTauriPhotoUrl(filePath: string, variant: "display" | "thumb"): string {
-  return `gridmode-photo://${variant}/${encodePathToken(filePath)}`;
-}
-
-function isGridModePhotoUrl(value: string): boolean {
-  return value.startsWith("gridmode-photo://");
+  return convertFileSrc(`${variant}/${encodePathToken(filePath)}`, "gridmode-photo");
 }
 
 function convertPhoto(photo: PhotoAsset): PhotoAsset {
   return {
     ...photo,
-    url: isGridModePhotoUrl(photo.url) ? photo.url : makeTauriPhotoUrl(photo.path, "display"),
-    thumbnailUrl: isGridModePhotoUrl(photo.thumbnailUrl)
-      ? photo.thumbnailUrl
-      : makeTauriPhotoUrl(photo.path, "thumb")
+    url: makeTauriPhotoUrl(photo.path, "display"),
+    thumbnailUrl: makeTauriPhotoUrl(photo.path, "thumb")
   };
 }
 
