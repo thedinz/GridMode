@@ -22,6 +22,7 @@ export interface PhotoAsset {
   directory: string;
   extension: string;
   size: number;
+  cacheKey: string;
   url: string;
   thumbnailUrl: string;
   capturedAt: string;
@@ -125,6 +126,7 @@ export interface GridModeApi {
   updates: {
     check: (options?: { automatic?: boolean }) => Promise<UpdateStatus>;
     download: () => Promise<UpdateStatus>;
+    openDownload: (downloadUrl: string) => Promise<UpdateStatus>;
     install: () => Promise<UpdateStatus>;
     onStatus: (callback: (status: UpdateStatus) => void) => () => void;
   };

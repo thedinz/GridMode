@@ -150,6 +150,15 @@ export function App(): JSX.Element {
     }
   }, [mergeState]);
 
+  const refreshHome = useCallback(async () => {
+    const [rootDir] = getPhotoDirectories(state.settings);
+    if (rootDir) {
+      await checkLibraryForChanges(rootDir);
+    } else {
+      await loadHome();
+    }
+  }, [checkLibraryForChanges, loadHome, state.settings]);
+
   const openView = useCallback(
     async (nextView: View) => {
       setView(nextView);
@@ -224,7 +233,11 @@ export function App(): JSX.Element {
       });
     });
     const updateCheckTimer = window.setTimeout(() => {
-      void gridModeApi.updates.check({ automatic: true });
+      void gridModeApi.updates.check({ automatic: true }).then((status) => {
+        if (status.state !== "idle" && status.state !== "not-available") {
+          setUpdateStatus(status);
+        }
+      });
     }, automaticUpdateCheckDelayMs);
 
     return () => {
@@ -479,6 +492,7 @@ export function App(): JSX.Element {
     loadHome,
     openPhoto,
     openView,
+    refreshHome,
     removeExclusion,
     removePhotoDirectory,
     rescan,
@@ -503,7 +517,7 @@ export function App(): JSX.Element {
           onHome={() => void openView({ name: "home" })}
           onLibrary={() => void openView({ name: "library" })}
           onSettings={() => setView({ name: "settings" })}
-          onRefresh={view.name === "home" ? () => void loadHome() : rescan}
+          onRefresh={view.name === "home" ? () => void refreshHome() : rescan}
         />
       ) : null}
       <UpdateBanner
@@ -590,6 +604,14 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
   const canDownload = status.state === "available";
   const canInstall = status.state === "downloaded";
   const downloadLabel = status.manualDownload ? "Open download" : "Download";
+  const download = () => {
+    if (status.manualDownload && status.downloadUrl) {
+      void gridModeApi.updates.openDownload(status.downloadUrl);
+      return;
+    }
+
+    void gridModeApi.updates.download();
+  };
 
   return (
     <aside className={`update-banner ${status.state}`}>
@@ -600,7 +622,7 @@ function UpdateBanner({ status }: { status: UpdateStatus }): JSX.Element | null 
       {canDownload ? (
         <button
           className="text-button"
-          onClick={() => void gridModeApi.updates.download()}
+          onClick={download}
         >
           <Download size={16} />
           <span>{downloadLabel}</span>

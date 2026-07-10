@@ -10,6 +10,7 @@ use std::{
     fs,
     io::{BufReader, BufWriter, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
+    process::Command,
     sync::{Condvar, Mutex, OnceLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -53,6 +54,9 @@ const SUPPORTED_EXTENSIONS: [&str; 13] = [
 const BROWSER_NATIVE_EXTENSIONS: [&str; 9] = [
     "jpg", "jpeg", "jpe", "jfif", "png", "webp", "gif", "bmp", "avif",
 ];
+const GITHUB_LATEST_RELEASE_API: &str =
+    "https://api.github.com/repos/thedinz/GridMode/releases/latest";
+const GITHUB_RELEASE_PATH_PREFIX: &str = "/thedinz/GridMode/";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum PhotoRenderVariant {
@@ -117,6 +121,20 @@ struct PendingUpdate {
     bytes: Option<Vec<u8>>,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    html_url: String,
+    #[serde(default)]
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
+    browser_download_url: String,
+}
+
 #[derive(Default)]
 struct StateData {
     settings: Settings,
@@ -155,6 +173,8 @@ struct PhotoAsset {
     directory: String,
     extension: String,
     size: u64,
+    #[serde(default)]
+    cache_key: String,
     url: String,
     thumbnail_url: String,
     captured_at: String,
@@ -538,7 +558,7 @@ fn library_get_home(
     ensure_library_locked(&app, &mut data)?;
     Ok(HomePayload {
         summary: data.cached_summary.clone(),
-        photos: sample_photos(&data.cached_photos, 260),
+        photos: random_home_photos(&data.cached_photos, 260),
     })
 }
 
@@ -629,6 +649,10 @@ async fn updates_check(
     let updater = match app.updater() {
         Ok(updater) => updater,
         Err(error) => {
+            if let Some(status) = manual_download_update_status(automatic).await? {
+                emit_update_status(&app, status.clone());
+                return Ok(status);
+            }
             let status = updates_error_status(format!("Could not start updater: {error}"));
             if automatic {
                 return Ok(updates_idle_status());
@@ -650,8 +674,14 @@ async fn updates_check(
             Ok(status)
         }
         Ok(None) => {
-            let mut pending = pending_update.inner.lock().map_err(lock_error)?;
-            *pending = None;
+            {
+                let mut pending = pending_update.inner.lock().map_err(lock_error)?;
+                *pending = None;
+            }
+            if let Some(status) = manual_download_update_status(automatic).await? {
+                emit_update_status(&app, status.clone());
+                return Ok(status);
+            }
             let status = updates_not_available_status();
             if automatic {
                 return Ok(updates_idle_status());
@@ -660,6 +690,10 @@ async fn updates_check(
             Ok(status)
         }
         Err(error) => {
+            if let Some(status) = manual_download_update_status(automatic).await? {
+                emit_update_status(&app, status.clone());
+                return Ok(status);
+            }
             let status = updates_error_status(format!("Update check failed: {error}"));
             if automatic {
                 return Ok(updates_idle_status());
@@ -668,6 +702,23 @@ async fn updates_check(
             Ok(status)
         }
     }
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn updates_open_download(app: AppHandle, download_url: String) -> Result<UpdateStatus, String> {
+    validate_external_download_url(&download_url)?;
+    open_external_url(&download_url)?;
+
+    let status = UpdateStatus {
+        state: "available".to_string(),
+        version: None,
+        message: Some("Opened the GridMode download in your browser.".to_string()),
+        percent: None,
+        download_url: Some(download_url),
+        manual_download: Some(true),
+    };
+    emit_update_status(&app, status.clone());
+    Ok(status)
 }
 
 #[tauri::command]
@@ -1081,6 +1132,7 @@ fn build_photo_asset(
         Some(snapshot) => snapshot.clone(),
         None => read_photo_file_snapshot(file_path)?,
     };
+    let cache_key = photo_cache_key(&stat);
     let captured = datetime_from_mtime_ms(stat.mtime_ms);
     let extension = Path::new(file_path)
         .extension()
@@ -1105,8 +1157,9 @@ fn build_photo_asset(
         directory,
         extension,
         size: stat.size,
-        url: make_photo_url(file_path, PhotoRenderVariant::Display),
-        thumbnail_url: make_photo_url(file_path, PhotoRenderVariant::Thumb),
+        cache_key: cache_key.clone(),
+        url: make_photo_url(file_path, PhotoRenderVariant::Display, &cache_key),
+        thumbnail_url: make_photo_url(file_path, PhotoRenderVariant::Thumb, &cache_key),
         captured_at: captured.to_rfc3339_opts(SecondsFormat::Millis, true),
         date_source: "file".to_string(),
         year: captured.year(),
@@ -1139,9 +1192,14 @@ fn refresh_cached_photo_asset(photo: &PhotoAsset, snapshot: &PhotoFileSnapshot) 
         .unwrap_or_default()
         .to_lowercase();
     next.size = snapshot.size;
-    next.url = make_photo_url(&snapshot.path, PhotoRenderVariant::Display);
-    next.thumbnail_url = make_photo_url(&snapshot.path, PhotoRenderVariant::Thumb);
+    next.cache_key = photo_cache_key(snapshot);
+    next.url = make_photo_url(&snapshot.path, PhotoRenderVariant::Display, &next.cache_key);
+    next.thumbnail_url = make_photo_url(&snapshot.path, PhotoRenderVariant::Thumb, &next.cache_key);
     next
+}
+
+fn photo_cache_key(snapshot: &PhotoFileSnapshot) -> String {
+    format!("{}-{}", snapshot.size, snapshot.mtime_ms)
 }
 
 fn build_summary(
@@ -1220,6 +1278,37 @@ fn sample_photos(photos: &[PhotoAsset], count: usize) -> Vec<PhotoAsset> {
         .take(count)
         .cloned()
         .collect()
+}
+
+fn random_home_photos(photos: &[PhotoAsset], count: usize) -> Vec<PhotoAsset> {
+    if photos.len() <= 1 {
+        return photos.to_vec();
+    }
+
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().to_string())
+        .unwrap_or_else(|_| now_iso());
+    let mut keyed: Vec<(String, PhotoAsset)> = photos
+        .iter()
+        .map(|photo| (home_photo_order_key(photo, &seed), photo.clone()))
+        .collect();
+    keyed.sort_by(|left, right| left.0.cmp(&right.0));
+    keyed
+        .into_iter()
+        .take(count.min(photos.len()))
+        .map(|(_, photo)| photo)
+        .collect()
+}
+
+fn home_photo_order_key(photo: &PhotoAsset, seed: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(seed.as_bytes());
+    hasher.update([0]);
+    hasher.update(photo.id.as_bytes());
+    hasher.update([0]);
+    hasher.update(photo.cache_key.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn format_scan_complete_message(
@@ -1751,12 +1840,18 @@ fn mime_type_for_path(file_path: &str) -> &'static str {
     }
 }
 
-fn make_photo_url(file_path: &str, variant: PhotoRenderVariant) -> String {
-    format!(
+fn make_photo_url(file_path: &str, variant: PhotoRenderVariant, cache_key: &str) -> String {
+    let base_url = format!(
         "gridmode-photo://{}/{}",
         photo_render_variant_token(variant),
         encode_path_token(file_path)
-    )
+    );
+
+    if cache_key.is_empty() {
+        base_url
+    } else {
+        format!("{base_url}?v={cache_key}")
+    }
 }
 
 fn photo_render_variant_token(variant: PhotoRenderVariant) -> &'static str {
@@ -2259,6 +2354,143 @@ fn updates_available_status(update: &Update) -> UpdateStatus {
     }
 }
 
+async fn manual_download_update_status(automatic: bool) -> Result<Option<UpdateStatus>, String> {
+    let status = manual_download_update_status_for_platform().await;
+    if automatic {
+        return Ok(status.unwrap_or(None));
+    }
+
+    status
+}
+
+async fn manual_download_update_status_for_platform() -> Result<Option<UpdateStatus>, String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_manual_download_update_status().await
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(None)
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn macos_manual_download_update_status() -> Result<Option<UpdateStatus>, String> {
+    let release = reqwest::Client::new()
+        .get(GITHUB_LATEST_RELEASE_API)
+        .header(reqwest::header::USER_AGENT, "GridMode updater")
+        .send()
+        .await
+        .map_err(|error| format!("Could not check GitHub Releases: {error}"))?;
+
+    if !release.status().is_success() {
+        return Err(format!(
+            "GitHub Releases check failed with HTTP {}",
+            release.status()
+        ));
+    }
+
+    let release = release
+        .json::<GitHubRelease>()
+        .await
+        .map_err(|error| format!("Could not read GitHub Releases response: {error}"))?;
+    let latest_version = normalize_version_tag(&release.tag_name);
+    if !is_newer_version(&latest_version, env!("CARGO_PKG_VERSION")) {
+        return Ok(None);
+    }
+
+    let download_url = release
+        .assets
+        .iter()
+        .find(|asset| asset.name.to_lowercase().ends_with(".dmg"))
+        .map(|asset| asset.browser_download_url.clone())
+        .unwrap_or(release.html_url);
+    validate_external_download_url(&download_url)?;
+
+    Ok(Some(UpdateStatus {
+        state: "available".to_string(),
+        version: Some(latest_version),
+        message: Some("A GridMode update is available for macOS.".to_string()),
+        percent: None,
+        download_url: Some(download_url),
+        manual_download: Some(true),
+    }))
+}
+
+fn normalize_version_tag(version: &str) -> String {
+    version
+        .trim()
+        .trim_start_matches('v')
+        .trim_start_matches('V')
+        .to_string()
+}
+
+fn is_newer_version(candidate: &str, current: &str) -> bool {
+    match (version_triplet(candidate), version_triplet(current)) {
+        (Some(candidate), Some(current)) => candidate > current,
+        _ => candidate != current,
+    }
+}
+
+fn version_triplet(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version
+        .split(|character| matches!(character, '.' | '-' | '+'))
+        .take(3)
+        .map(str::parse::<u64>);
+    Some((
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+    ))
+}
+
+fn validate_external_download_url(url: &str) -> Result<(), String> {
+    let uri: http::Uri = url
+        .parse()
+        .map_err(|error| format!("Download URL could not be parsed: {error}"))?;
+    let is_github_gridmode_url = uri.scheme_str() == Some("https")
+        && uri
+            .authority()
+            .map(|authority| authority.host() == "github.com")
+            .unwrap_or(false)
+        && uri.path().starts_with(GITHUB_RELEASE_PATH_PREFIX);
+
+    if is_github_gridmode_url {
+        Ok(())
+    } else {
+        Err("Download URL is not a GridMode GitHub release.".to_string())
+    }
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = Command::new("open");
+        command.arg(url);
+        command
+    };
+
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        command
+    };
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        command
+    };
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| format!("Could not open download URL: {error}"))
+}
+
 fn updates_downloading_status(update: &Update, percent: Option<f64>) -> UpdateStatus {
     UpdateStatus {
         state: "downloading".to_string(),
@@ -2368,6 +2600,7 @@ pub fn run() {
             photo_get_details,
             updates_check,
             updates_download,
+            updates_open_download,
             updates_install
         ])
         .run(tauri::generate_context!())

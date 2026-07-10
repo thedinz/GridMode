@@ -31,15 +31,19 @@ function encodePathToken(filePath: string): string {
     .replace(/=+$/, "");
 }
 
-function makeTauriPhotoUrl(filePath: string, variant: "display" | "thumb"): string {
-  return convertFileSrc(`${variant}/${encodePathToken(filePath)}`, "gridmode-photo");
+function makeTauriPhotoUrl(filePath: string, variant: "display" | "thumb", cacheKey?: string): string {
+  const url = convertFileSrc(`${variant}/${encodePathToken(filePath)}`, "gridmode-photo");
+  return cacheKey ? `${url}?v=${encodeURIComponent(cacheKey)}` : url;
 }
 
 function convertPhoto(photo: PhotoAsset): PhotoAsset {
+  const cacheKey = photo.cacheKey || `${photo.size}-${photo.capturedAt}`;
+
   return {
     ...photo,
-    url: makeTauriPhotoUrl(photo.path, "display"),
-    thumbnailUrl: makeTauriPhotoUrl(photo.path, "thumb")
+    cacheKey,
+    url: makeTauriPhotoUrl(photo.path, "display", cacheKey),
+    thumbnailUrl: makeTauriPhotoUrl(photo.path, "thumb", cacheKey)
   };
 }
 
@@ -141,6 +145,8 @@ function createTauriApi(): GridModeApi {
     updates: {
       check: (options = {}) => invoke<UpdateStatus>("updates_check", options),
       download: () => invoke<UpdateStatus>("updates_download"),
+      openDownload: (downloadUrl: string) =>
+        invoke<UpdateStatus>("updates_open_download", { downloadUrl }),
       install: () => invoke<UpdateStatus>("updates_install"),
       onStatus: (callback: (status: UpdateStatus) => void) => subscribe("updates:status", callback)
     }
