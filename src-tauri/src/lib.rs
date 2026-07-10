@@ -1621,8 +1621,9 @@ fn read_tiff_ifd_orientation(
             return read_tiff_u16(bytes, entry_offset + 8, byte_order);
         }
 
-        let value_offset = usize::try_from(read_tiff_u32(bytes, entry_offset + 8, byte_order)?).ok()?;
-        read_tiff_u16(bytes, value_offset, byte_order)
+        let value_offset =
+            usize::try_from(read_tiff_u32(bytes, entry_offset + 8, byte_order)?).ok()?;
+        return read_tiff_u16(bytes, value_offset, byte_order);
     }
 
     None
