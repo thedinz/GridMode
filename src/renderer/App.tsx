@@ -49,6 +49,7 @@ interface AppState {
   scanProgress?: ScanProgress;
   loading: boolean;
   statusText?: string;
+  settingsStatusText?: string;
 }
 
 const initialSummary: LibrarySummary = {
@@ -356,45 +357,103 @@ export function App(): JSX.Element {
     });
   }, [mergeState, state.settings.photoDirectory]);
 
+  const reloadCurrentLibraryView = useCallback(async (summary: LibrarySummary): Promise<Partial<AppState>> => {
+    if (view.name === "home") {
+      const payload = await gridModeApi.library.getHome();
+      return {
+        summary: payload.summary,
+        homePhotos: payload.photos
+      };
+    }
+
+    if (view.name === "year") {
+      return {
+        summary,
+        year: await gridModeApi.library.getYear(view.year)
+      };
+    }
+
+    if (view.name === "month") {
+      return {
+        summary,
+        month: await gridModeApi.library.getMonth(view.year, view.month)
+      };
+    }
+
+    if (view.name === "photo") {
+      return {
+        summary,
+        details: await gridModeApi.photo.getDetails(view.photo.path)
+      };
+    }
+
+    return { summary };
+  }, [view]);
+
   const rescan = useCallback(async () => {
     mergeState({
       loading: true,
       statusText: "Rescanning library",
+      settingsStatusText: undefined,
       scanProgress: {
         phase: "discovering",
-        rootDir: state.settings.photoDirectory,
+        rootDir: getPhotoDirectories(state.settings)[0],
         message: "Finding photos"
       }
     });
-    const summary = await gridModeApi.library.scan(true);
-    mergeState({ summary, loading: false, statusText: undefined, scanProgress: undefined });
-    if (view.name === "home") {
-      await loadHome();
+
+    try {
+      const summary = await gridModeApi.library.scan(true);
+      const viewPatch = await reloadCurrentLibraryView(summary);
+      mergeState({
+        ...viewPatch,
+        loading: false,
+        statusText: undefined,
+        scanProgress: undefined,
+        settingsStatusText: formatLibraryActionComplete("Rescan complete", viewPatch.summary ?? summary)
+      });
+    } catch (error) {
+      mergeState({
+        loading: false,
+        statusText: undefined,
+        scanProgress: undefined,
+        settingsStatusText: `Rescan failed: ${getErrorMessage(error)}`
+      });
     }
-  }, [loadHome, mergeState, state.settings.photoDirectory, view.name]);
+  }, [mergeState, reloadCurrentLibraryView, state.settings]);
 
   const clearCache = useCallback(async () => {
     mergeState({
       loading: true,
       statusText: "Clearing cache",
+      settingsStatusText: undefined,
       scanProgress: {
         phase: "discovering",
-        rootDir: state.settings.photoDirectory,
+        rootDir: getPhotoDirectories(state.settings)[0],
         message: "Clearing cached thumbnails and rebuilding library"
       }
     });
-    const { settings, summary } = await gridModeApi.settings.clearCache();
-    mergeState({
-      settings,
-      summary,
-      loading: false,
-      statusText: undefined,
-      scanProgress: undefined
-    });
-    if (view.name === "home") {
-      await loadHome();
+
+    try {
+      const { settings, summary } = await gridModeApi.settings.clearCache();
+      const viewPatch = await reloadCurrentLibraryView(summary);
+      mergeState({
+        ...viewPatch,
+        settings,
+        loading: false,
+        statusText: undefined,
+        scanProgress: undefined,
+        settingsStatusText: formatLibraryActionComplete("Cache rebuilt", viewPatch.summary ?? summary)
+      });
+    } catch (error) {
+      mergeState({
+        loading: false,
+        statusText: undefined,
+        scanProgress: undefined,
+        settingsStatusText: `Clear cache failed: ${getErrorMessage(error)}`
+      });
     }
-  }, [loadHome, mergeState, state.settings.photoDirectory, view.name]);
+  }, [mergeState, reloadCurrentLibraryView, state.settings]);
 
   const openPhoto = useCallback(
     (photo: PhotoAsset) => {
@@ -428,6 +487,8 @@ export function App(): JSX.Element {
           onRemoveExclusion={removeExclusion}
           onRescan={rescan}
           onClearCache={clearCache}
+          libraryStatusText={state.settingsStatusText}
+          isBusy={state.loading}
           updateStatus={updateStatus}
           onCheckUpdates={() => void gridModeApi.updates.check()}
         />
@@ -867,6 +928,8 @@ function SettingsView({
   onRemoveExclusion,
   onRescan,
   onClearCache,
+  libraryStatusText,
+  isBusy,
   onCheckUpdates
 }: {
   settings: AppSettings;
@@ -879,6 +942,8 @@ function SettingsView({
   onRemoveExclusion: (excludedPath: string) => void;
   onRescan: () => void;
   onClearCache: () => void;
+  libraryStatusText?: string;
+  isBusy: boolean;
   onCheckUpdates: () => void;
 }): JSX.Element {
   const excludedDirectories = settings.excludedDirectories ?? [];
@@ -902,6 +967,7 @@ function SettingsView({
             <button
               className="text-button"
               onClick={onAddPhotoDirectory}
+              disabled={isBusy}
             >
               <FolderOpen size={16} />
               <span>Add</span>
@@ -916,6 +982,7 @@ function SettingsView({
                     <button
                       className="text-button"
                       onClick={onChooseRoot}
+                      disabled={isBusy}
                     >
                       <FolderOpen size={16} />
                       <span>Change</span>
@@ -925,6 +992,7 @@ function SettingsView({
                       className="icon-button"
                       onClick={() => onRemovePhotoDirectory(photoDirectory)}
                       title="Remove photo location"
+                      disabled={isBusy}
                     >
                       <X size={16} />
                     </button>
@@ -951,7 +1019,7 @@ function SettingsView({
           />
           <Metric
             label="Scanned"
-            value={summary.lastScanAt ? formatDate(summary.lastScanAt) : "Never"}
+            value={summary.lastScanAt ? formatDateTime(summary.lastScanAt) : "Never"}
           />
         </div>
         <div className="settings-section">
@@ -963,6 +1031,7 @@ function SettingsView({
             <button
               className="text-button"
               onClick={onChooseExclusion}
+              disabled={isBusy}
             >
               <FolderX size={16} />
               <span>Add</span>
@@ -977,6 +1046,7 @@ function SettingsView({
                     className="icon-button"
                     onClick={() => onRemoveExclusion(excludedPath)}
                     title="Remove exclusion"
+                    disabled={isBusy}
                   >
                     <X size={16} />
                   </button>
@@ -991,6 +1061,7 @@ function SettingsView({
           <button
             className="text-button"
             onClick={onRescan}
+            disabled={isBusy}
           >
             <RefreshCcw size={16} />
             <span>Rescan</span>
@@ -998,6 +1069,7 @@ function SettingsView({
           <button
             className="text-button"
             onClick={onClearCache}
+            disabled={isBusy}
           >
             <Trash2 size={16} />
             <span>Clear cache</span>
@@ -1005,11 +1077,13 @@ function SettingsView({
           <button
             className="text-button"
             onClick={onCheckUpdates}
+            disabled={isBusy}
           >
             <Download size={16} />
             <span>Check updates</span>
           </button>
         </div>
+        {libraryStatusText ? <p className="settings-note">{libraryStatusText}</p> : null}
         {updateStatus.message ? <p className="settings-note">{updateStatus.message}</p> : null}
       </div>
     </section>
@@ -1360,6 +1434,22 @@ function formatDate(value: string): string {
     month: "short",
     day: "numeric"
   });
+}
+
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function formatLibraryActionComplete(label: string, summary: LibrarySummary): string {
+  const scannedAt = summary.lastScanAt ? formatDateTime(summary.lastScanAt) : formatDateTime(new Date().toISOString());
+  return `${label} - ${summary.photoCount.toLocaleString()} photos indexed at ${scannedAt}`;
 }
 
 function getPhotoDirectories(settings: AppSettings): string[] {

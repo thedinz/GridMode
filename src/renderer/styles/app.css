@@ -31,6 +31,11 @@ button {
   color: inherit;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.52;
+}
+
 .app-shell {
   display: flex;
   flex-direction: column;
