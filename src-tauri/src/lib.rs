@@ -8,7 +8,7 @@ use sha1::{Digest, Sha1};
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    io::BufWriter,
+    io::{BufReader, BufWriter, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::{Condvar, Mutex, OnceLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -18,11 +18,17 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const LIBRARY_INDEX_VERSION: u32 = 1;
-const IMAGE_CACHE_VERSION: &str = "v2-rust-jpeg";
+const IMAGE_CACHE_VERSION: &str = "v3-rust-jpeg-exif-orientation";
 const THUMBNAIL_SIZE: u32 = 320;
 const DISPLAY_MAX_DIMENSION: u32 = 3840;
 const MIN_IMAGE_RENDER_JOB_LIMIT: usize = 2;
 const MAX_IMAGE_RENDER_JOB_LIMIT: usize = 3;
+const JPEG_APP1_MARKER: u8 = 0xe1;
+const JPEG_START_OF_SCAN_MARKER: u8 = 0xda;
+const JPEG_END_OF_IMAGE_MARKER: u8 = 0xd9;
+const EXIF_HEADER: &[u8; 6] = b"Exif\0\0";
+const TIFF_ORIENTATION_TAG: u16 = 0x0112;
+const TIFF_TYPE_SHORT: u16 = 3;
 
 const MONTH_NAMES: [&str; 12] = [
     "January",
@@ -1479,6 +1485,7 @@ fn render_image(
         .map_err(|error| error.to_string())?
         .decode()
         .map_err(|error| error.to_string())?;
+    let image = apply_exif_orientation(file_path, image);
     let rendered = match variant {
         PhotoRenderVariant::Thumb => resize_to_cover(image, THUMBNAIL_SIZE),
         PhotoRenderVariant::Display | PhotoRenderVariant::Image => {
@@ -1486,6 +1493,171 @@ fn render_image(
         }
     };
     write_jpeg(output_path, &rendered, jpeg_quality_for_variant(variant))
+}
+
+fn apply_exif_orientation(file_path: &str, image: DynamicImage) -> DynamicImage {
+    match read_exif_orientation(file_path) {
+        Some(2) => image.fliph(),
+        Some(3) => image.rotate180(),
+        Some(4) => image.flipv(),
+        Some(5) => image.rotate90().fliph(),
+        Some(6) => image.rotate90(),
+        Some(7) => image.rotate90().flipv(),
+        Some(8) => image.rotate270(),
+        _ => image,
+    }
+}
+
+fn read_exif_orientation(file_path: &str) -> Option<u16> {
+    let file = fs::File::open(file_path).ok()?;
+    let mut reader = BufReader::new(file);
+    let signature = read_exact_array::<2, _>(&mut reader)?;
+
+    if signature == [0xff, 0xd8] {
+        return read_jpeg_exif_orientation(&mut reader);
+    }
+
+    if signature == *b"II" || signature == *b"MM" {
+        let mut bytes = Vec::from(signature);
+        reader.read_to_end(&mut bytes).ok()?;
+        return read_tiff_orientation(&bytes);
+    }
+
+    None
+}
+
+fn read_jpeg_exif_orientation<R: Read + Seek>(reader: &mut R) -> Option<u16> {
+    loop {
+        let marker = read_jpeg_marker(reader)?;
+        if marker == JPEG_START_OF_SCAN_MARKER || marker == JPEG_END_OF_IMAGE_MARKER {
+            return None;
+        }
+        if is_standalone_jpeg_marker(marker) {
+            continue;
+        }
+
+        let segment_length = read_be_u16(reader)?;
+        if segment_length < 2 {
+            return None;
+        }
+        let payload_length = usize::from(segment_length - 2);
+        if marker != JPEG_APP1_MARKER {
+            reader.seek(SeekFrom::Current(payload_length as i64)).ok()?;
+            continue;
+        }
+
+        let mut segment = vec![0; payload_length];
+        reader.read_exact(&mut segment).ok()?;
+        if segment.starts_with(EXIF_HEADER) {
+            return read_tiff_orientation(&segment[EXIF_HEADER.len()..]);
+        }
+    }
+}
+
+fn read_jpeg_marker<R: Read>(reader: &mut R) -> Option<u8> {
+    let mut byte = read_exact_array::<1, _>(reader)?[0];
+    while byte != 0xff {
+        byte = read_exact_array::<1, _>(reader)?[0];
+    }
+
+    let mut marker = read_exact_array::<1, _>(reader)?[0];
+    while marker == 0xff {
+        marker = read_exact_array::<1, _>(reader)?[0];
+    }
+
+    Some(marker)
+}
+
+fn is_standalone_jpeg_marker(marker: u8) -> bool {
+    marker == 0x01 || (0xd0..=0xd8).contains(&marker)
+}
+
+fn read_be_u16<R: Read>(reader: &mut R) -> Option<u16> {
+    Some(u16::from_be_bytes(read_exact_array::<2, _>(reader)?))
+}
+
+fn read_exact_array<const N: usize, R: Read>(reader: &mut R) -> Option<[u8; N]> {
+    let mut bytes = [0; N];
+    reader.read_exact(&mut bytes).ok()?;
+    Some(bytes)
+}
+
+fn read_tiff_orientation(bytes: &[u8]) -> Option<u16> {
+    let byte_order = TiffByteOrder::from_header(bytes)?;
+    if read_tiff_u16(bytes, 2, byte_order)? != 42 {
+        return None;
+    }
+
+    let first_ifd_offset = usize::try_from(read_tiff_u32(bytes, 4, byte_order)?).ok()?;
+    read_tiff_ifd_orientation(bytes, first_ifd_offset, byte_order)
+}
+
+fn read_tiff_ifd_orientation(
+    bytes: &[u8],
+    ifd_offset: usize,
+    byte_order: TiffByteOrder,
+) -> Option<u16> {
+    let entry_count = usize::from(read_tiff_u16(bytes, ifd_offset, byte_order)?);
+    let entries_offset = ifd_offset.checked_add(2)?;
+    let entries_length = entry_count.checked_mul(12)?;
+    let entries_end = entries_offset.checked_add(entries_length)?;
+    if entries_end > bytes.len() {
+        return None;
+    }
+
+    for entry_index in 0..entry_count {
+        let entry_offset = entries_offset + entry_index * 12;
+        let tag = read_tiff_u16(bytes, entry_offset, byte_order)?;
+        if tag != TIFF_ORIENTATION_TAG {
+            continue;
+        }
+
+        let field_type = read_tiff_u16(bytes, entry_offset + 2, byte_order)?;
+        let value_count = read_tiff_u32(bytes, entry_offset + 4, byte_order)?;
+        if field_type != TIFF_TYPE_SHORT || value_count == 0 {
+            return None;
+        }
+        if value_count == 1 {
+            return read_tiff_u16(bytes, entry_offset + 8, byte_order);
+        }
+
+        let value_offset = usize::try_from(read_tiff_u32(bytes, entry_offset + 8, byte_order)?).ok()?;
+        read_tiff_u16(bytes, value_offset, byte_order)
+    }
+
+    None
+}
+
+#[derive(Clone, Copy)]
+enum TiffByteOrder {
+    LittleEndian,
+    BigEndian,
+}
+
+impl TiffByteOrder {
+    fn from_header(bytes: &[u8]) -> Option<Self> {
+        match bytes.get(..2)? {
+            b"II" => Some(Self::LittleEndian),
+            b"MM" => Some(Self::BigEndian),
+            _ => None,
+        }
+    }
+}
+
+fn read_tiff_u16(bytes: &[u8], offset: usize, byte_order: TiffByteOrder) -> Option<u16> {
+    let value = bytes.get(offset..offset.checked_add(2)?)?;
+    Some(match byte_order {
+        TiffByteOrder::LittleEndian => u16::from_le_bytes(value.try_into().ok()?),
+        TiffByteOrder::BigEndian => u16::from_be_bytes(value.try_into().ok()?),
+    })
+}
+
+fn read_tiff_u32(bytes: &[u8], offset: usize, byte_order: TiffByteOrder) -> Option<u32> {
+    let value = bytes.get(offset..offset.checked_add(4)?)?;
+    Some(match byte_order {
+        TiffByteOrder::LittleEndian => u32::from_le_bytes(value.try_into().ok()?),
+        TiffByteOrder::BigEndian => u32::from_be_bytes(value.try_into().ok()?),
+    })
 }
 
 fn resize_to_cover(image: DynamicImage, size: u32) -> DynamicImage {
