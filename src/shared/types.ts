@@ -58,7 +58,13 @@ export interface LibrarySummary {
   warnings: string[];
 }
 
-export type ScanPhase = "idle" | "discovering" | "reading-metadata" | "complete" | "error";
+export type ScanPhase =
+  | "idle"
+  | "discovering"
+  | "reading-metadata"
+  | "generating-thumbnails"
+  | "complete"
+  | "error";
 
 export interface ScanProgress {
   phase: ScanPhase;
@@ -69,10 +75,24 @@ export interface ScanProgress {
   photosReused?: number;
   photosChanged?: number;
   photosRemoved?: number;
+  thumbnailsGenerated?: number;
+  thumbnailsReused?: number;
+  thumbnailFailures?: number;
   foldersExcluded?: number;
   totalPhotos?: number;
   currentPath?: string;
   message?: string;
+}
+
+export interface ThumbnailCacheSummary {
+  total: number;
+  generated: number;
+  reused: number;
+  failed: number;
+}
+
+export interface ThumbnailRebuildPayload extends SettingsPayload {
+  thumbnails: ThumbnailCacheSummary;
 }
 
 export interface HomePayload {
@@ -109,6 +129,7 @@ export interface GridModeApi {
     addRoot: () => Promise<SettingsPayload>;
     removeRoot: (rootPath: string) => Promise<SettingsPayload>;
     clearCache: () => Promise<SettingsPayload>;
+    rebuildThumbnails: () => Promise<ThumbnailRebuildPayload>;
     chooseExclusion: () => Promise<SettingsPayload>;
     removeExclusion: (excludedPath: string) => Promise<SettingsPayload>;
   };

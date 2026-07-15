@@ -427,23 +427,18 @@ export function App(): JSX.Element {
       loading: true,
       statusText: "Clearing cache",
       settingsStatusText: undefined,
-      scanProgress: {
-        phase: "discovering",
-        rootDir: getPhotoDirectories(state.settings)[0],
-        message: "Clearing cached thumbnails and rebuilding library"
-      }
+      scanProgress: undefined
     });
 
     try {
       const { settings, summary } = await gridModeApi.settings.clearCache();
-      const viewPatch = await reloadCurrentLibraryView(summary);
       mergeState({
-        ...viewPatch,
         settings,
+        summary,
         loading: false,
         statusText: undefined,
         scanProgress: undefined,
-        settingsStatusText: formatLibraryActionComplete("Cache rebuilt", viewPatch.summary ?? summary)
+        settingsStatusText: "Image cache cleared. Thumbnails will be recreated on the next scan or as needed."
       });
     } catch (error) {
       mergeState({
@@ -453,7 +448,45 @@ export function App(): JSX.Element {
         settingsStatusText: `Clear cache failed: ${getErrorMessage(error)}`
       });
     }
-  }, [mergeState, reloadCurrentLibraryView, state.settings]);
+  }, [mergeState]);
+
+  const rebuildThumbnails = useCallback(async () => {
+    mergeState({
+      loading: true,
+      statusText: "Rebuilding thumbnails",
+      settingsStatusText: undefined,
+      scanProgress: {
+        phase: "generating-thumbnails",
+        rootDir: getPhotoDirectories(state.settings)[0],
+        photosProcessed: 0,
+        totalPhotos: state.summary.photoCount,
+        message: "Preparing thumbnail cache"
+      }
+    });
+
+    try {
+      const { settings, summary, thumbnails } = await gridModeApi.settings.rebuildThumbnails();
+      const ready = thumbnails.generated + thumbnails.reused;
+      const failureText = thumbnails.failed > 0
+        ? ` ${thumbnails.failed.toLocaleString()} could not be generated; see library warnings for details.`
+        : "";
+      mergeState({
+        settings,
+        summary,
+        loading: false,
+        statusText: undefined,
+        scanProgress: undefined,
+        settingsStatusText: `${ready.toLocaleString()} thumbnails ready.${failureText}`
+      });
+    } catch (error) {
+      mergeState({
+        loading: false,
+        statusText: undefined,
+        scanProgress: undefined,
+        settingsStatusText: `Thumbnail rebuild failed: ${getErrorMessage(error)}`
+      });
+    }
+  }, [mergeState, state.settings, state.summary.photoCount]);
 
   const openPhoto = useCallback(
     (photo: PhotoAsset) => {
@@ -486,6 +519,7 @@ export function App(): JSX.Element {
           onChooseExclusion={chooseExclusion}
           onRemoveExclusion={removeExclusion}
           onRescan={rescan}
+          onRebuildThumbnails={rebuildThumbnails}
           onClearCache={clearCache}
           libraryStatusText={state.settingsStatusText}
           isBusy={state.loading}
@@ -556,6 +590,7 @@ export function App(): JSX.Element {
     refreshHome,
     removeExclusion,
     removePhotoDirectory,
+    rebuildThumbnails,
     rescan,
     state.details,
     state.homePhotos,
@@ -927,6 +962,7 @@ function SettingsView({
   onChooseExclusion,
   onRemoveExclusion,
   onRescan,
+  onRebuildThumbnails,
   onClearCache,
   libraryStatusText,
   isBusy,
@@ -941,6 +977,7 @@ function SettingsView({
   onChooseExclusion: () => void;
   onRemoveExclusion: (excludedPath: string) => void;
   onRescan: () => void;
+  onRebuildThumbnails: () => void;
   onClearCache: () => void;
   libraryStatusText?: string;
   isBusy: boolean;
@@ -1057,6 +1094,9 @@ function SettingsView({
             <p className="settings-note">No folders excluded</p>
           )}
         </div>
+        <p className="settings-note">
+          Scans prebuild thumbnails in the app data cache so photo grids can load immediately.
+        </p>
         <div className="settings-actions">
           <button
             className="text-button"
@@ -1065,6 +1105,14 @@ function SettingsView({
           >
             <RefreshCcw size={16} />
             <span>Rescan</span>
+          </button>
+          <button
+            className="text-button"
+            onClick={onRebuildThumbnails}
+            disabled={isBusy}
+          >
+            <Image size={16} />
+            <span>Rebuild thumbnails</span>
           </button>
           <button
             className="text-button"
@@ -1084,6 +1132,14 @@ function SettingsView({
           </button>
         </div>
         {libraryStatusText ? <p className="settings-note">{libraryStatusText}</p> : null}
+        {summary.warnings.length > 0 ? (
+          <details className="settings-warnings">
+            <summary>{summary.warnings.length.toLocaleString()} library warnings</summary>
+            <ul>
+              {summary.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+            </ul>
+          </details>
+        ) : null}
         {updateStatus.message ? <p className="settings-note">{updateStatus.message}</p> : null}
       </div>
     </section>
@@ -1381,7 +1437,7 @@ function Metric({ label, value }: { label: string; value: string }): JSX.Element
 
 function LoadingOverlay({ label, progress }: { label: string; progress?: ScanProgress }): JSX.Element {
   const percent =
-    progress?.phase === "reading-metadata" && progress.totalPhotos
+    (progress?.phase === "reading-metadata" || progress?.phase === "generating-thumbnails") && progress.totalPhotos
       ? Math.round(((progress.photosProcessed ?? 0) / progress.totalPhotos) * 100)
       : undefined;
 
@@ -1415,6 +1471,18 @@ function formatScanProgress(progress: ScanProgress, percent: number | undefined)
     const suffix = percent === undefined ? "" : ` - ${percent}%`;
     const reusedText = reused > 0 ? ` - ${reused.toLocaleString()} cached` : "";
     return `${processed.toLocaleString()} / ${total.toLocaleString()} photos processed${suffix}${reusedText}`;
+  }
+
+  if (progress.phase === "generating-thumbnails") {
+    const processed = progress.photosProcessed ?? 0;
+    const total = progress.totalPhotos ?? progress.photosFound ?? 0;
+    const generated = progress.thumbnailsGenerated ?? 0;
+    const cached = progress.thumbnailsReused ?? 0;
+    const failures = progress.thumbnailFailures ?? 0;
+    const suffix = percent === undefined ? "" : ` - ${percent}%`;
+    const cachedText = cached > 0 ? ` - ${cached.toLocaleString()} already cached` : "";
+    const failureText = failures > 0 ? ` - ${failures.toLocaleString()} failed` : "";
+    return `${processed.toLocaleString()} / ${total.toLocaleString()} thumbnails checked${suffix} - ${generated.toLocaleString()} generated${cachedText}${failureText}`;
   }
 
   if (progress.phase === "complete") {

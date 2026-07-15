@@ -6,10 +6,10 @@ GridMode is a Windows and macOS desktop photo viewer for people who already like
 
 - Home grid with randomized square thumbnails from the selected photo locations.
 - Photo detail view with a large image and extracted EXIF/date/location metadata.
-- Cached thumbnail rendering for faster grids, including TIFF/TIF support through a native image pipeline.
+- Scan-time thumbnail pre-generation for instantly available grids, including TIFF/TIF support through a native image pipeline.
 - Persistent library indexing so startup can reuse cached metadata and only process new or modified photos.
 - Library view grouped by year, then month, using EXIF dates with file modified time as a fallback.
-- Settings view for choosing, adding, rescanning, excluding photo locations, and clearing generated caches.
+- Settings view for choosing, adding, rescanning, excluding photo locations, clearing generated caches, and rebuilding all thumbnails.
 - Windows NSIS and macOS DMG installers built with Tauri.
 - Migration release support for existing Windows Electron installs through GitHub Releases.
 

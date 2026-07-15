@@ -11,7 +11,10 @@ use std::{
     io::{BufReader, BufWriter, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Condvar, Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Condvar, Mutex, OnceLock,
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{http, AppHandle, Emitter, Manager, State};
@@ -164,6 +167,23 @@ struct SettingsPayload {
     summary: LibrarySummary,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThumbnailCacheSummary {
+    total: usize,
+    generated: usize,
+    reused: usize,
+    failed: usize,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ThumbnailRebuildPayload {
+    settings: Settings,
+    summary: LibrarySummary,
+    thumbnails: ThumbnailCacheSummary,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PhotoAsset {
@@ -275,6 +295,12 @@ struct ScanProgress {
     photos_changed: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     photos_removed: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnails_generated: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnails_reused: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thumbnail_failures: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     folders_excluded: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -486,10 +512,55 @@ fn settings_clear_cache(
     app: AppHandle,
     state: State<'_, GridModeState>,
 ) -> Result<SettingsPayload, String> {
-    let mut data = state.inner.lock().map_err(lock_error)?;
-    clear_library_cache(&app, &mut data)?;
-    scan_library_locked(&app, &mut data, true)?;
+    let data = state.inner.lock().map_err(lock_error)?;
+    clear_image_cache(&app)?;
     Ok(settings_payload(&data))
+}
+
+#[tauri::command]
+fn settings_rebuild_thumbnails(
+    app: AppHandle,
+    state: State<'_, GridModeState>,
+) -> Result<ThumbnailRebuildPayload, String> {
+    let mut data = state.inner.lock().map_err(lock_error)?;
+    clear_thumbnail_cache(&app)?;
+    ensure_library_locked(&app, &mut data)?;
+
+    let root_dirs = get_photo_directories(&data.settings);
+    let root_summary =
+        format_root_summary(&root_dirs).unwrap_or_else(|| "Photo library".to_string());
+    let (thumbnails, thumbnail_warnings) =
+        pregenerate_thumbnails(&app, &data.cached_photos, &root_summary);
+    merge_thumbnail_warnings(&mut data.cached_summary, thumbnail_warnings);
+    write_library_index(
+        &app_data_dir(&app)?,
+        &data,
+        &root_dirs,
+        &data.cached_summary,
+    )?;
+
+    let message = format_thumbnail_complete_message(&thumbnails);
+    let _ = app.emit(
+        "scan:progress",
+        ScanProgress {
+            phase: "complete".to_string(),
+            root_dir: Some(root_summary),
+            photos_found: Some(thumbnails.total),
+            photos_processed: Some(thumbnails.total),
+            thumbnails_generated: Some(thumbnails.generated),
+            thumbnails_reused: Some(thumbnails.reused),
+            thumbnail_failures: Some(thumbnails.failed),
+            total_photos: Some(thumbnails.total),
+            message: Some(message),
+            ..empty_progress()
+        },
+    );
+
+    Ok(ThumbnailRebuildPayload {
+        settings: data.settings.clone(),
+        summary: data.cached_summary.clone(),
+        thumbnails,
+    })
 }
 
 #[tauri::command]
@@ -890,7 +961,7 @@ fn do_scan(
     let excluded = normalize_excluded_directories(root_dirs, &data.settings.excluded_directories);
     let root_summary =
         format_root_summary(root_dirs).unwrap_or_else(|| "Photo library".to_string());
-    let mut emitter = ProgressEmitter::new(app, root_summary);
+    let mut emitter = ProgressEmitter::new(app, root_summary.clone());
 
     emitter.send(
         ScanProgress {
@@ -1006,6 +1077,10 @@ fn do_scan(
     data.cached_photo_stats = next_stats;
     data.has_library_index = true;
 
+    let (thumbnail_summary, thumbnail_warnings) =
+        pregenerate_thumbnails(app, &data.cached_photos, &root_summary);
+    warnings.extend(thumbnail_warnings);
+
     let summary = build_summary(root_dirs, &data.cached_photos, &warnings, None);
     data.cached_summary = summary.clone();
     write_library_index(&app_data_dir(app)?, data, root_dirs, &summary)?;
@@ -1024,6 +1099,7 @@ fn do_scan(
                 reused,
                 total_to_index,
                 removed,
+                &thumbnail_summary,
             )),
             ..empty_progress()
         },
@@ -1316,14 +1392,20 @@ fn format_scan_complete_message(
     reused: usize,
     changed: usize,
     removed: usize,
+    thumbnails: &ThumbnailCacheSummary,
 ) -> String {
-    if changed == 0 && removed == 0 && reused > 0 {
-        return format!("Library up to date - reused {} cached photos", reused);
-    }
-
-    let mut parts = vec![format!("Indexed {} photos", total)];
+    let mut parts = if changed == 0 && removed == 0 && reused > 0 {
+        vec![format!(
+            "Library up to date - reused {} cached photos",
+            reused
+        )]
+    } else {
+        vec![format!("Indexed {} photos", total)]
+    };
     if reused > 0 {
-        parts.push(format!("{} cached", reused));
+        if changed > 0 || removed > 0 {
+            parts.push(format!("{} cached", reused));
+        }
     }
     if changed > 0 {
         parts.push(format!("{} new or changed", changed));
@@ -1331,7 +1413,24 @@ fn format_scan_complete_message(
     if removed > 0 {
         parts.push(format!("{} removed", removed));
     }
+    if thumbnails.failed > 0 {
+        parts.push(format!("{} thumbnails failed", thumbnails.failed));
+    } else {
+        parts.push(format!("{} thumbnails ready", thumbnails.total));
+    }
     parts.join(" - ")
+}
+
+fn format_thumbnail_complete_message(thumbnails: &ThumbnailCacheSummary) -> String {
+    if thumbnails.failed > 0 {
+        format!(
+            "Thumbnail rebuild finished - {} ready - {} failed",
+            thumbnails.generated + thumbnails.reused,
+            thumbnails.failed
+        )
+    } else {
+        format!("{} thumbnails ready", thumbnails.total)
+    }
 }
 
 fn handle_photo_protocol_request(app: &AppHandle, uri_text: &str) -> http::Response<Vec<u8>> {
@@ -1482,17 +1581,33 @@ fn get_cached_render_path(
     file_path: &str,
     variant: PhotoRenderVariant,
 ) -> Result<PathBuf, String> {
-    let metadata = fs::metadata(file_path).map_err(|error| error.to_string())?;
+    ensure_cached_render_path(app, file_path, variant).map(|(path, _)| path)
+}
+
+fn ensure_cached_render_path(
+    app: &AppHandle,
+    file_path: &str,
+    variant: PhotoRenderVariant,
+) -> Result<(PathBuf, bool), String> {
     let data_dir = app_data_dir(app)?;
-    let output_path = image_cache_file_path(&data_dir, file_path, &metadata, variant);
+    ensure_cached_render_path_in(&data_dir, file_path, variant)
+}
+
+fn ensure_cached_render_path_in(
+    data_dir: &Path,
+    file_path: &str,
+    variant: PhotoRenderVariant,
+) -> Result<(PathBuf, bool), String> {
+    let metadata = fs::metadata(file_path).map_err(|error| error.to_string())?;
+    let output_path = image_cache_file_path(data_dir, file_path, &metadata, variant);
 
     if output_path.exists() {
-        return Ok(output_path);
+        return Ok((output_path, false));
     }
 
     let _permit = image_render_queue().acquire();
     if output_path.exists() {
-        return Ok(output_path);
+        return Ok((output_path, false));
     }
 
     if let Some(parent) = output_path.parent() {
@@ -1504,7 +1619,131 @@ fn get_cached_render_path(
         let _ = fs::remove_file(&temp_path);
     })?;
     fs::rename(&temp_path, &output_path).map_err(|error| error.to_string())?;
-    Ok(output_path)
+    Ok((output_path, true))
+}
+
+fn pregenerate_thumbnails(
+    app: &AppHandle,
+    photos: &[PhotoAsset],
+    root_summary: &str,
+) -> (ThumbnailCacheSummary, Vec<String>) {
+    let total = photos.len();
+    let initial = ScanProgress {
+        phase: "generating-thumbnails".to_string(),
+        root_dir: Some(root_summary.to_string()),
+        photos_found: Some(total),
+        photos_processed: Some(0),
+        thumbnails_generated: Some(0),
+        thumbnails_reused: Some(0),
+        thumbnail_failures: Some(0),
+        total_photos: Some(total),
+        message: Some("Preparing thumbnail cache".to_string()),
+        ..empty_progress()
+    };
+    let _ = app.emit("scan:progress", initial);
+
+    if total == 0 {
+        return (ThumbnailCacheSummary::default(), Vec::new());
+    }
+
+    let data_dir = match app_data_dir(app) {
+        Ok(data_dir) => data_dir,
+        Err(error) => {
+            return (
+                ThumbnailCacheSummary {
+                    total,
+                    failed: total,
+                    ..ThumbnailCacheSummary::default()
+                },
+                vec![format!("Thumbnail cache: {}", error)],
+            );
+        }
+    };
+
+    let next_index = AtomicUsize::new(0);
+    let processed = AtomicUsize::new(0);
+    let generated = AtomicUsize::new(0);
+    let reused = AtomicUsize::new(0);
+    let failures = AtomicUsize::new(0);
+    let warnings = Mutex::new(Vec::new());
+    let last_reported = Mutex::new(0usize);
+    let report_interval = (total.saturating_add(99) / 100).max(1);
+    let worker_count = image_render_job_limit().min(total);
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            scope.spawn(|| loop {
+                let index = next_index.fetch_add(1, Ordering::Relaxed);
+                let Some(photo) = photos.get(index) else {
+                    break;
+                };
+
+                match ensure_cached_render_path_in(
+                    &data_dir,
+                    &photo.path,
+                    PhotoRenderVariant::Thumb,
+                ) {
+                    Ok((_, was_generated)) => {
+                        if was_generated {
+                            generated.fetch_add(1, Ordering::Relaxed);
+                        } else {
+                            reused.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    Err(error) => {
+                        failures.fetch_add(1, Ordering::Relaxed);
+                        let mut warning_list = warnings
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        if warning_list.len() < 20 {
+                            warning_list.push(format!("Thumbnail for {}: {}", photo.path, error));
+                        }
+                    }
+                }
+
+                let completed = processed.fetch_add(1, Ordering::Relaxed) + 1;
+                if completed == total || completed % report_interval == 0 {
+                    let mut reported = last_reported
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if completed <= *reported {
+                        continue;
+                    }
+                    *reported = completed;
+                    let generated_count = generated.load(Ordering::Relaxed);
+                    let reused_count = reused.load(Ordering::Relaxed);
+                    let failure_count = failures.load(Ordering::Relaxed);
+                    let _ = app.emit(
+                        "scan:progress",
+                        ScanProgress {
+                            phase: "generating-thumbnails".to_string(),
+                            root_dir: Some(root_summary.to_string()),
+                            photos_found: Some(total),
+                            photos_processed: Some(completed),
+                            thumbnails_generated: Some(generated_count),
+                            thumbnails_reused: Some(reused_count),
+                            thumbnail_failures: Some(failure_count),
+                            total_photos: Some(total),
+                            current_path: Some(photo.path.clone()),
+                            message: Some("Building thumbnail cache".to_string()),
+                            ..empty_progress()
+                        },
+                    );
+                }
+            });
+        }
+    });
+
+    let summary = ThumbnailCacheSummary {
+        total,
+        generated: generated.load(Ordering::Relaxed),
+        reused: reused.load(Ordering::Relaxed),
+        failed: failures.load(Ordering::Relaxed),
+    };
+    let warnings = warnings
+        .into_inner()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    (summary, warnings)
 }
 
 fn image_render_queue() -> &'static ImageRenderQueue {
@@ -1899,12 +2138,41 @@ fn decode_path_token(token: &str) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|error| format!("Photo path was not UTF-8: {}", error))
 }
 
-fn clear_library_cache(app: &AppHandle, data: &mut StateData) -> Result<(), String> {
-    reset_library(data);
+fn clear_image_cache(app: &AppHandle) -> Result<(), String> {
     let data_dir = app_data_dir(app)?;
-    let _ = fs::remove_dir_all(image_cache_path(&data_dir));
-    let _ = fs::remove_file(library_index_path(&data_dir));
-    Ok(())
+    remove_cache_directory(&image_cache_path(&data_dir))
+}
+
+fn clear_thumbnail_cache(app: &AppHandle) -> Result<(), String> {
+    let data_dir = app_data_dir(app)?;
+    remove_cache_directory(
+        &image_cache_path(&data_dir).join(photo_render_variant_token(PhotoRenderVariant::Thumb)),
+    )
+}
+
+fn remove_cache_directory(path: &Path) -> Result<(), String> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "Could not clear {}: {}",
+            path_to_string(path),
+            error
+        )),
+    }
+}
+
+fn merge_thumbnail_warnings(summary: &mut LibrarySummary, warnings: Vec<String>) {
+    summary
+        .warnings
+        .retain(|warning| !warning.starts_with("Thumbnail "));
+    if warnings.is_empty() {
+        return;
+    }
+    let mut merged = warnings;
+    merged.append(&mut summary.warnings);
+    merged.truncate(20);
+    summary.warnings = merged;
 }
 
 fn reset_library(data: &mut StateData) {
@@ -2303,6 +2571,9 @@ fn empty_progress() -> ScanProgress {
         photos_reused: None,
         photos_changed: None,
         photos_removed: None,
+        thumbnails_generated: None,
+        thumbnails_reused: None,
+        thumbnail_failures: None,
         folders_excluded: None,
         total_photos: None,
         current_path: None,
@@ -2590,6 +2861,7 @@ pub fn run() {
             settings_add_root,
             settings_remove_root,
             settings_clear_cache,
+            settings_rebuild_thumbnails,
             settings_choose_exclusion,
             settings_remove_exclusion,
             library_scan,

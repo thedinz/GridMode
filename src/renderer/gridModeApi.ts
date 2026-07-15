@@ -9,6 +9,7 @@ import type {
   PhotoDetails,
   ScanProgress,
   SettingsPayload,
+  ThumbnailRebuildPayload,
   UpdateStatus,
   YearPayload
 } from "../shared/types";
@@ -124,6 +125,13 @@ function createTauriApi(): GridModeApi {
       removeRoot: async (rootPath: string) =>
         convertSettingsPayload(await invoke<SettingsPayload>("settings_remove_root", { rootPath })),
       clearCache: async () => convertSettingsPayload(await invoke<SettingsPayload>("settings_clear_cache")),
+      rebuildThumbnails: async () => {
+        const payload = await invoke<ThumbnailRebuildPayload>("settings_rebuild_thumbnails");
+        return {
+          ...convertSettingsPayload(payload),
+          thumbnails: payload.thumbnails
+        };
+      },
       chooseExclusion: async () =>
         convertSettingsPayload(await invoke<SettingsPayload>("settings_choose_exclusion")),
       removeExclusion: async (excludedPath: string) =>
