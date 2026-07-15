@@ -9,7 +9,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     io::{BufReader, BufWriter, Read, Seek, SeekFrom},
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -270,6 +270,23 @@ struct MonthPayload {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct DirectoryBreadcrumb {
+    name: String,
+    path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirectoryPayload {
+    path: String,
+    name: String,
+    photo_count: usize,
+    breadcrumbs: Vec<DirectoryBreadcrumb>,
+    photos: Vec<PhotoAsset>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ExifRow {
     label: String,
     value: String,
@@ -280,6 +297,7 @@ struct ExifRow {
 struct PhotoDetails {
     photo: PhotoAsset,
     exif: Vec<ExifRow>,
+    directory_breadcrumbs: Vec<DirectoryBreadcrumb>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -694,6 +712,43 @@ fn library_get_month(
 }
 
 #[tauri::command(rename_all = "camelCase")]
+fn library_get_directory(
+    app: AppHandle,
+    state: State<'_, GridModeState>,
+    directory_path: String,
+) -> Result<DirectoryPayload, String> {
+    let mut data = state.inner.lock().map_err(lock_error)?;
+    ensure_library_locked(&app, &mut data, true)?;
+
+    let root_dirs = get_photo_directories(&data.settings);
+    let directory_path = normalize_path_string(&directory_path);
+    if is_path_excluded(&directory_path, &data.settings.excluded_directories) {
+        return Err("Directory is excluded from the photo library.".to_string());
+    }
+
+    let breadcrumbs = directory_breadcrumbs(&root_dirs, &directory_path)
+        .ok_or_else(|| "Directory is outside the configured photo library.".to_string())?;
+    let photos: Vec<PhotoAsset> = data
+        .cached_photos
+        .iter()
+        .filter(|photo| is_inside_directory(&directory_path, &photo.path))
+        .cloned()
+        .collect();
+    let name = breadcrumbs
+        .last()
+        .map(|breadcrumb| breadcrumb.name.clone())
+        .unwrap_or_else(|| directory_path.clone());
+
+    Ok(DirectoryPayload {
+        path: directory_path,
+        name,
+        photo_count: photos.len(),
+        breadcrumbs,
+        photos,
+    })
+}
+
+#[tauri::command(rename_all = "camelCase")]
 fn photo_get_details(
     app: AppHandle,
     state: State<'_, GridModeState>,
@@ -707,9 +762,13 @@ fn photo_get_details(
         .find(|item| item.path == photo_path)
         .cloned()
         .ok_or_else(|| "Photo is not part of the current library.".to_string())?;
+    let root_dirs = get_photo_directories(&data.settings);
+    let directory_breadcrumbs = directory_breadcrumbs(&root_dirs, &photo.directory)
+        .ok_or_else(|| "Photo directory is outside the configured library.".to_string())?;
     Ok(PhotoDetails {
         photo,
         exif: Vec::new(),
+        directory_breadcrumbs,
     })
 }
 
@@ -2548,6 +2607,47 @@ fn same_directory(left: &str, right: &str) -> bool {
     }
 }
 
+fn directory_breadcrumbs(
+    root_dirs: &[String],
+    directory_path: &str,
+) -> Option<Vec<DirectoryBreadcrumb>> {
+    let directory_path = normalize_path_string(directory_path);
+    let root_dir = root_dirs
+        .iter()
+        .find(|root_dir| is_inside_directory(root_dir, &directory_path))?;
+    let root_dir = normalize_path_string(root_dir);
+    let root_path = Path::new(&root_dir);
+    let directory = Path::new(&directory_path);
+    let root_component_count = root_path.components().count();
+
+    let mut breadcrumbs = vec![DirectoryBreadcrumb {
+        name: directory_display_name(root_path),
+        path: root_dir.clone(),
+    }];
+    let mut current_path = PathBuf::from(&root_dir);
+
+    for component in directory.components().skip(root_component_count) {
+        let Component::Normal(name) = component else {
+            continue;
+        };
+        current_path.push(name);
+        breadcrumbs.push(DirectoryBreadcrumb {
+            name: name.to_string_lossy().to_string(),
+            path: path_to_string(&current_path),
+        });
+    }
+
+    Some(breadcrumbs)
+}
+
+fn directory_display_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| path_to_string(path))
+}
+
 fn same_directories(left: &[String], right: &[String]) -> bool {
     left.len() == right.len()
         && left
@@ -2912,6 +3012,35 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> String {
     "GridMode state lock was poisoned.".to_string()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_breadcrumbs_start_at_the_configured_library_root() {
+        let roots = vec!["__gridmode_test_library__".to_string()];
+        let breadcrumbs =
+            directory_breadcrumbs(&roots, "__gridmode_test_library__/Pictures/Pets/Milo")
+                .expect("directory should be inside the test library");
+        let names: Vec<&str> = breadcrumbs
+            .iter()
+            .map(|breadcrumb| breadcrumb.name.as_str())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec!["__gridmode_test_library__", "Pictures", "Pets", "Milo"]
+        );
+    }
+
+    #[test]
+    fn directory_breadcrumbs_reject_paths_outside_the_library() {
+        let roots = vec!["__gridmode_test_library__".to_string()];
+
+        assert!(directory_breadcrumbs(&roots, "__gridmode_other__/Pictures").is_none());
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2960,6 +3089,7 @@ pub fn run() {
             library_get_years,
             library_get_year,
             library_get_month,
+            library_get_directory,
             photo_get_details,
             updates_check,
             updates_download,

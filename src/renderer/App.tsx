@@ -2,6 +2,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ChevronLeft,
+  ChevronRight,
   Download,
   FolderOpen,
   FolderX,
@@ -18,6 +19,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GridModeLogo } from "./components/GridModeLogo";
 import { gridModeApi } from "./gridModeApi";
 import type {
+  DirectoryBreadcrumb,
+  DirectoryPayload,
   ExifRow,
   HomePayload,
   LibrarySummary,
@@ -36,6 +39,7 @@ type View =
   | { name: "library" }
   | { name: "year"; year: number }
   | { name: "month"; year: number; month: number }
+  | { name: "directory"; path: string; previous: View }
   | { name: "photo"; photo: PhotoAsset; previous: View }
   | { name: "settings" };
 
@@ -45,6 +49,7 @@ interface AppState {
   homePhotos: PhotoAsset[];
   year?: YearPayload;
   month?: MonthPayload;
+  directory?: DirectoryPayload;
   details?: PhotoDetails;
   scanProgress?: ScanProgress;
   loading: boolean;
@@ -183,8 +188,12 @@ export function App(): JSX.Element {
         });
         const month = await gridModeApi.library.getMonth(nextView.year, nextView.month);
         mergeState({ month, loading: false, statusText: undefined });
+      } else if (nextView.name === "directory") {
+        mergeState({ loading: true, statusText: "Loading folder" });
+        const directory = await gridModeApi.library.getDirectory(nextView.path);
+        mergeState({ directory, loading: false, statusText: undefined });
       } else if (nextView.name === "photo") {
-        mergeState({ loading: true, statusText: "Reading metadata" });
+        mergeState({ details: undefined, loading: true, statusText: "Reading metadata" });
         const details = await gridModeApi.photo.getDetails(nextView.photo.path);
         mergeState({ details, loading: false, statusText: undefined });
       }
@@ -497,6 +506,13 @@ export function App(): JSX.Element {
     [openView, view]
   );
 
+  const openDirectory = useCallback(
+    (path: string) => {
+      void openView({ name: "directory", path, previous: view });
+    },
+    [openView, view]
+  );
+
   const content = useMemo(() => {
     const isScanningLibrary = state.loading && Boolean(state.scanProgress);
 
@@ -562,12 +578,24 @@ export function App(): JSX.Element {
       );
     }
 
+    if (view.name === "directory") {
+      return (
+        <DirectoryView
+          payload={state.directory}
+          onBack={() => void openView(view.previous)}
+          onOpenDirectory={openDirectory}
+          onOpenPhoto={openPhoto}
+        />
+      );
+    }
+
     if (view.name === "photo") {
       return (
         <PhotoView
           details={state.details}
           fallbackPhoto={view.photo}
           onBack={() => void openView(view.previous)}
+          onOpenDirectory={openDirectory}
         />
       );
     }
@@ -588,6 +616,7 @@ export function App(): JSX.Element {
     clearCache,
     loadHome,
     openPhoto,
+    openDirectory,
     openView,
     refreshHome,
     removeExclusion,
@@ -595,6 +624,7 @@ export function App(): JSX.Element {
     rebuildThumbnails,
     rescan,
     state.details,
+    state.directory,
     state.homePhotos,
     state.settings,
     state.summary,
@@ -674,7 +704,7 @@ function TopBar({
           <span>Grid</span>
         </button>
         <button
-          className={view.name === "library" || view.name === "year" || view.name === "month" ? "nav-button active" : "nav-button"}
+          className={view.name === "library" || view.name === "year" || view.name === "month" || view.name === "directory" ? "nav-button active" : "nav-button"}
           onClick={onLibrary}
           title="Library"
         >
@@ -927,14 +957,56 @@ function MonthView({
   );
 }
 
+function DirectoryView({
+  payload,
+  onBack,
+  onOpenDirectory,
+  onOpenPhoto
+}: {
+  payload?: DirectoryPayload;
+  onBack: () => void;
+  onOpenDirectory: (path: string) => void;
+  onOpenPhoto: (photo: PhotoAsset) => void;
+}): JSX.Element {
+  const photos = payload?.photos ?? [];
+
+  return (
+    <section className="view-stack">
+      <div className="view-heading">
+        <div>
+          <p>Folder · {(payload?.photoCount ?? 0).toLocaleString()} photos</p>
+          <h1>{payload?.name ?? "Folder"}</h1>
+          <DirectoryBreadcrumbs
+            breadcrumbs={payload?.breadcrumbs ?? []}
+            onOpenDirectory={onOpenDirectory}
+          />
+        </div>
+        <button
+          className="text-button"
+          onClick={onBack}
+        >
+          <ChevronLeft size={16} />
+          <span>Back</span>
+        </button>
+      </div>
+      <PhotoGrid
+        photos={photos}
+        onOpenPhoto={onOpenPhoto}
+      />
+    </section>
+  );
+}
+
 function PhotoView({
   details,
   fallbackPhoto,
-  onBack
+  onBack,
+  onOpenDirectory
 }: {
   details?: PhotoDetails;
   fallbackPhoto: PhotoAsset;
   onBack: () => void;
+  onOpenDirectory: (path: string) => void;
 }): JSX.Element {
   const photo = details?.photo ?? fallbackPhoto;
   return (
@@ -957,6 +1029,8 @@ function PhotoView({
         <MetadataRows
           rows={details?.exif ?? []}
           photo={photo}
+          directoryBreadcrumbs={details?.directoryBreadcrumbs ?? []}
+          onOpenDirectory={onOpenDirectory}
         />
       </div>
     </section>
@@ -1434,19 +1508,58 @@ function PhotoTile({
   );
 }
 
-function MetadataRows({ rows, photo }: { rows: ExifRow[]; photo: PhotoAsset }): JSX.Element {
+function DirectoryBreadcrumbs({
+  breadcrumbs,
+  onOpenDirectory,
+  fallback
+}: {
+  breadcrumbs: DirectoryBreadcrumb[];
+  onOpenDirectory: (path: string) => void;
+  fallback?: string;
+}): JSX.Element {
+  if (breadcrumbs.length === 0) {
+    return <span className="directory-breadcrumb-fallback">{fallback}</span>;
+  }
+
+  return (
+    <nav
+      className="directory-breadcrumbs"
+      aria-label="Photo folder path"
+    >
+      {breadcrumbs.map((breadcrumb, index) => (
+        <span
+          className="directory-breadcrumb"
+          key={breadcrumb.path}
+        >
+          {index > 0 ? <ChevronRight size={13} aria-hidden="true" /> : null}
+          <button
+            type="button"
+            onClick={() => onOpenDirectory(breadcrumb.path)}
+            title={`Open ${breadcrumb.path} in GridMode`}
+          >
+            {breadcrumb.name}
+          </button>
+        </span>
+      ))}
+    </nav>
+  );
+}
+
+function MetadataRows({
+  rows,
+  photo,
+  directoryBreadcrumbs,
+  onOpenDirectory
+}: {
+  rows: ExifRow[];
+  photo: PhotoAsset;
+  directoryBreadcrumbs: DirectoryBreadcrumb[];
+  onOpenDirectory: (path: string) => void;
+}): JSX.Element {
   const fallbackRows: ExifRow[] = [
     {
       label: "Taken",
       value: `${formatDate(photo.capturedAt)} (${photo.dateSource})`
-    },
-    {
-      label: "Folder",
-      value: photo.directory
-    },
-    {
-      label: "File size",
-      value: formatBytes(photo.size)
     }
   ];
 
@@ -1460,18 +1573,20 @@ function MetadataRows({ rows, photo }: { rows: ExifRow[]; photo: PhotoAsset }): 
           <dd>{row.value}</dd>
         </div>
       ))}
-      {rows.length > 0 ? (
-        <>
-          <div>
-            <dt>Folder</dt>
-            <dd>{photo.directory}</dd>
-          </div>
-          <div>
-            <dt>File size</dt>
-            <dd>{formatBytes(photo.size)}</dd>
-          </div>
-        </>
-      ) : null}
+      <div className="metadata-folder">
+        <dt>Folder</dt>
+        <dd>
+          <DirectoryBreadcrumbs
+            breadcrumbs={directoryBreadcrumbs}
+            onOpenDirectory={onOpenDirectory}
+            fallback={photo.directory}
+          />
+        </dd>
+      </div>
+      <div>
+        <dt>File size</dt>
+        <dd>{formatBytes(photo.size)}</dd>
+      </div>
     </dl>
   );
 }

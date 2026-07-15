@@ -463,6 +463,56 @@ button:disabled {
   white-space: nowrap;
 }
 
+.metadata-folder {
+  grid-column: 1 / -1;
+}
+
+.metadata-folder dd {
+  overflow: visible;
+  white-space: normal;
+}
+
+.directory-breadcrumbs,
+.directory-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+}
+
+.directory-breadcrumbs {
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: min(940px, 70vw);
+  color: rgba(244, 240, 231, 0.4);
+}
+
+.view-heading .directory-breadcrumbs {
+  margin-top: 8px;
+}
+
+.directory-breadcrumb {
+  gap: 3px;
+}
+
+.directory-breadcrumb button {
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #9ed1b7;
+  cursor: pointer;
+}
+
+.directory-breadcrumb button:hover,
+.directory-breadcrumb button:focus-visible {
+  background: rgba(158, 209, 183, 0.12);
+  color: #d5f2e3;
+  outline: none;
+}
+
+.directory-breadcrumb-fallback {
+  color: #fbf8ef;
+}
+
 .settings-view {
   display: grid;
   place-items: start center;

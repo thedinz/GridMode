@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   GridModeApi,
+  DirectoryPayload,
   HomePayload,
   LibrarySummary,
   MonthPayload,
@@ -89,6 +90,13 @@ function convertMonthPayload(payload: MonthPayload): MonthPayload {
   };
 }
 
+function convertDirectoryPayload(payload: DirectoryPayload): DirectoryPayload {
+  return {
+    ...payload,
+    photos: payload.photos.map(convertPhoto)
+  };
+}
+
 function convertPhotoDetails(payload: PhotoDetails): PhotoDetails {
   return {
     ...payload,
@@ -144,6 +152,10 @@ function createTauriApi(): GridModeApi {
       getYear: async (year: number) => convertYearPayload(await invoke<YearPayload>("library_get_year", { year })),
       getMonth: async (year: number, month: number) =>
         convertMonthPayload(await invoke<MonthPayload>("library_get_month", { year, month })),
+      getDirectory: async (directoryPath: string) =>
+        convertDirectoryPayload(
+          await invoke<DirectoryPayload>("library_get_directory", { directoryPath })
+        ),
       onProgress: (callback: (progress: ScanProgress) => void) => subscribe("scan:progress", callback)
     },
     photo: {

@@ -112,6 +112,19 @@ export interface MonthPayload {
   photos: PhotoAsset[];
 }
 
+export interface DirectoryBreadcrumb {
+  name: string;
+  path: string;
+}
+
+export interface DirectoryPayload {
+  path: string;
+  name: string;
+  photoCount: number;
+  breadcrumbs: DirectoryBreadcrumb[];
+  photos: PhotoAsset[];
+}
+
 export interface ExifRow {
   label: string;
   value: string;
@@ -120,6 +133,7 @@ export interface ExifRow {
 export interface PhotoDetails {
   photo: PhotoAsset;
   exif: ExifRow[];
+  directoryBreadcrumbs: DirectoryBreadcrumb[];
 }
 
 export interface GridModeApi {
@@ -139,6 +153,7 @@ export interface GridModeApi {
     getYears: () => Promise<LibrarySummary>;
     getYear: (year: number) => Promise<YearPayload>;
     getMonth: (year: number, month: number) => Promise<MonthPayload>;
+    getDirectory: (directoryPath: string) => Promise<DirectoryPayload>;
     onProgress: (callback: (progress: ScanProgress) => void) => () => void;
   };
   photo: {
