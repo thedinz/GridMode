@@ -66,6 +66,8 @@ const gridRenderBatchSize = 64;
 const eagerGridThumbnailCount = 48;
 const thumbnailLoadRootMargin = "700px 0px";
 const gridRenderRootMargin = "1000px 0px";
+const thumbnailRetryLimit = 3;
+const thumbnailStallTimeoutMs = 8000;
 const automaticUpdateCheckDelayMs = 4500;
 
 interface LoadHomeOptions {
@@ -1327,13 +1329,30 @@ function PhotoTile({
   onOpen: () => void;
 }): JSX.Element {
   const tileRef = useRef<HTMLButtonElement | null>(null);
+  const imageRef = useRef<HTMLImageElement | null>(null);
   const [shouldLoad, setShouldLoad] = useState(eager);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [requestAttempt, setRequestAttempt] = useState(0);
 
   useEffect(() => {
     setShouldLoad(eager);
     setIsLoaded(false);
+    setRequestAttempt(0);
   }, [eager, photo.thumbnailUrl]);
+
+  const thumbnailSrc = useMemo(() => {
+    if (requestAttempt === 0) {
+      return photo.thumbnailUrl;
+    }
+
+    const separator = photo.thumbnailUrl.includes("?") ? "&" : "?";
+    return `${photo.thumbnailUrl}${separator}retry=${requestAttempt}`;
+  }, [photo.thumbnailUrl, requestAttempt]);
+
+  const retryThumbnail = useCallback(() => {
+    setIsLoaded(false);
+    setRequestAttempt((current) => Math.min(current + 1, thumbnailRetryLimit));
+  }, []);
 
   useEffect(() => {
     if (shouldLoad) {
@@ -1363,6 +1382,25 @@ function PhotoTile({
     };
   }, [shouldLoad]);
 
+  useEffect(() => {
+    if (!shouldLoad || isLoaded) {
+      return undefined;
+    }
+
+    const image = imageRef.current;
+    if (image?.complete && image.naturalWidth > 0) {
+      setIsLoaded(true);
+      return undefined;
+    }
+
+    if (requestAttempt >= thumbnailRetryLimit) {
+      return undefined;
+    }
+
+    const timeout = window.setTimeout(retryThumbnail, thumbnailStallTimeoutMs);
+    return () => window.clearTimeout(timeout);
+  }, [isLoaded, requestAttempt, retryThumbnail, shouldLoad, thumbnailSrc]);
+
   return (
     <button
       ref={tileRef}
@@ -1370,21 +1408,24 @@ function PhotoTile({
       onClick={onOpen}
       title={photo.name}
     >
-      {shouldLoad ? (
-        <img
-          className={isLoaded ? "loaded" : undefined}
-          src={photo.thumbnailUrl}
-          alt={photo.name}
-          loading={eager ? "eager" : "lazy"}
-          decoding="async"
-          onLoad={() => setIsLoaded(true)}
-        />
-      ) : (
+      {!isLoaded ? (
         <div
           className="photo-tile-placeholder"
           aria-hidden="true"
         />
-      )}
+      ) : null}
+      {shouldLoad ? (
+        <img
+          ref={imageRef}
+          className={isLoaded ? "loaded" : undefined}
+          src={thumbnailSrc}
+          alt={photo.name}
+          loading={eager ? "eager" : "lazy"}
+          decoding="async"
+          onLoad={() => setIsLoaded(true)}
+          onError={retryThumbnail}
+        />
+      ) : null}
       <span>
         <CalendarDays size={13} />
         {photo.year}
