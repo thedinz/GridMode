@@ -115,6 +115,11 @@ struct GridModeState {
     inner: Mutex<StateData>,
 }
 
+struct ThumbnailBuildState {
+    active: Mutex<bool>,
+    available: Condvar,
+}
+
 struct PendingUpdateState {
     inner: Mutex<Option<PendingUpdate>>,
 }
@@ -449,7 +454,7 @@ async fn settings_choose_root(
     }
     normalize_settings_in_place(&mut data.settings);
     write_settings(&app_data_dir(&app)?, &data.settings)?;
-    scan_library_locked(&app, &mut data, previous.is_empty())?;
+    scan_library_locked(&app, &mut data, previous.is_empty(), true)?;
     Ok(settings_payload(&data))
 }
 
@@ -478,7 +483,7 @@ async fn settings_add_root(
     data.settings.photo_directories = next;
     normalize_settings_in_place(&mut data.settings);
     write_settings(&app_data_dir(&app)?, &data.settings)?;
-    scan_library_locked(&app, &mut data, false)?;
+    scan_library_locked(&app, &mut data, false, true)?;
     Ok(settings_payload(&data))
 }
 
@@ -501,7 +506,7 @@ fn settings_remove_root(
     if get_photo_directories(&data.settings).is_empty() {
         reset_library(&mut data);
     } else {
-        scan_library_locked(&app, &mut data, false)?;
+        scan_library_locked(&app, &mut data, false, true)?;
     }
 
     Ok(settings_payload(&data))
@@ -512,6 +517,7 @@ fn settings_clear_cache(
     app: AppHandle,
     state: State<'_, GridModeState>,
 ) -> Result<SettingsPayload, String> {
+    wait_for_thumbnail_prebuild(&app)?;
     let data = state.inner.lock().map_err(lock_error)?;
     clear_image_cache(&app)?;
     Ok(settings_payload(&data))
@@ -522,9 +528,10 @@ fn settings_rebuild_thumbnails(
     app: AppHandle,
     state: State<'_, GridModeState>,
 ) -> Result<ThumbnailRebuildPayload, String> {
+    wait_for_thumbnail_prebuild(&app)?;
     let mut data = state.inner.lock().map_err(lock_error)?;
     clear_thumbnail_cache(&app)?;
-    ensure_library_locked(&app, &mut data)?;
+    ensure_library_locked(&app, &mut data, false)?;
 
     let root_dirs = get_photo_directories(&data.settings);
     let root_summary =
@@ -592,7 +599,7 @@ async fn settings_choose_exclusion(
         &selected_path,
     );
     write_settings(&app_data_dir(&app)?, &data.settings)?;
-    scan_library_locked(&app, &mut data, false)?;
+    scan_library_locked(&app, &mut data, false, true)?;
     Ok(settings_payload(&data))
 }
 
@@ -606,7 +613,7 @@ fn settings_remove_exclusion(
     data.settings.excluded_directories =
         remove_excluded_directory(&data.settings.excluded_directories, &excluded_path);
     write_settings(&app_data_dir(&app)?, &data.settings)?;
-    scan_library_locked(&app, &mut data, false)?;
+    scan_library_locked(&app, &mut data, false, true)?;
     Ok(settings_payload(&data))
 }
 
@@ -617,7 +624,7 @@ fn library_scan(
     force: bool,
 ) -> Result<LibrarySummary, String> {
     let mut data = state.inner.lock().map_err(lock_error)?;
-    scan_library_locked(&app, &mut data, force)
+    scan_library_locked(&app, &mut data, force, true)
 }
 
 #[tauri::command]
@@ -626,7 +633,7 @@ fn library_get_home(
     state: State<'_, GridModeState>,
 ) -> Result<HomePayload, String> {
     let mut data = state.inner.lock().map_err(lock_error)?;
-    ensure_library_locked(&app, &mut data)?;
+    ensure_library_locked(&app, &mut data, true)?;
     Ok(HomePayload {
         summary: data.cached_summary.clone(),
         photos: random_home_photos(&data.cached_photos, 260),
@@ -639,7 +646,7 @@ fn library_get_years(
     state: State<'_, GridModeState>,
 ) -> Result<LibrarySummary, String> {
     let mut data = state.inner.lock().map_err(lock_error)?;
-    ensure_library_locked(&app, &mut data)
+    ensure_library_locked(&app, &mut data, true)
 }
 
 #[tauri::command]
@@ -649,7 +656,7 @@ fn library_get_year(
     year: i32,
 ) -> Result<YearPayload, String> {
     let mut data = state.inner.lock().map_err(lock_error)?;
-    ensure_library_locked(&app, &mut data)?;
+    ensure_library_locked(&app, &mut data, true)?;
     let photos: Vec<PhotoAsset> = data
         .cached_photos
         .iter()
@@ -670,7 +677,7 @@ fn library_get_month(
     month: u32,
 ) -> Result<MonthPayload, String> {
     let mut data = state.inner.lock().map_err(lock_error)?;
-    ensure_library_locked(&app, &mut data)?;
+    ensure_library_locked(&app, &mut data, true)?;
     let mut photos: Vec<PhotoAsset> = data
         .cached_photos
         .iter()
@@ -693,7 +700,7 @@ fn photo_get_details(
     photo_path: String,
 ) -> Result<PhotoDetails, String> {
     let mut data = state.inner.lock().map_err(lock_error)?;
-    ensure_library_locked(&app, &mut data)?;
+    ensure_library_locked(&app, &mut data, true)?;
     let photo = data
         .cached_photos
         .iter()
@@ -919,7 +926,11 @@ fn updates_install(
     }
 }
 
-fn ensure_library_locked(app: &AppHandle, data: &mut StateData) -> Result<LibrarySummary, String> {
+fn ensure_library_locked(
+    app: &AppHandle,
+    data: &mut StateData,
+    prebuild_thumbnails: bool,
+) -> Result<LibrarySummary, String> {
     let root_dirs = get_photo_directories(&data.settings);
     if root_dirs.is_empty() {
         reset_library(data);
@@ -927,7 +938,7 @@ fn ensure_library_locked(app: &AppHandle, data: &mut StateData) -> Result<Librar
     }
 
     if !data.has_library_index && data.cached_photos.is_empty() {
-        return scan_library_locked(app, data, false);
+        return scan_library_locked(app, data, false, prebuild_thumbnails);
     }
 
     Ok(data.cached_summary.clone())
@@ -937,6 +948,7 @@ fn scan_library_locked(
     app: &AppHandle,
     data: &mut StateData,
     force: bool,
+    prebuild_thumbnails: bool,
 ) -> Result<LibrarySummary, String> {
     let root_dirs = get_photo_directories(&data.settings);
     if root_dirs.is_empty() {
@@ -948,6 +960,13 @@ fn scan_library_locked(
     data.cached_summary = summary.clone();
     data.settings.last_scan_at = summary.last_scan_at.clone();
     write_settings(&app_data_dir(app)?, &data.settings)?;
+    if prebuild_thumbnails {
+        schedule_thumbnail_prebuild(
+            app,
+            data.cached_photos.clone(),
+            format_root_summary(&root_dirs).unwrap_or_else(|| "Photo library".to_string()),
+        );
+    }
     Ok(summary)
 }
 
@@ -961,7 +980,7 @@ fn do_scan(
     let excluded = normalize_excluded_directories(root_dirs, &data.settings.excluded_directories);
     let root_summary =
         format_root_summary(root_dirs).unwrap_or_else(|| "Photo library".to_string());
-    let mut emitter = ProgressEmitter::new(app, root_summary.clone());
+    let mut emitter = ProgressEmitter::new(app, root_summary);
 
     emitter.send(
         ScanProgress {
@@ -1077,10 +1096,6 @@ fn do_scan(
     data.cached_photo_stats = next_stats;
     data.has_library_index = true;
 
-    let (thumbnail_summary, thumbnail_warnings) =
-        pregenerate_thumbnails(app, &data.cached_photos, &root_summary);
-    warnings.extend(thumbnail_warnings);
-
     let summary = build_summary(root_dirs, &data.cached_photos, &warnings, None);
     data.cached_summary = summary.clone();
     write_library_index(&app_data_dir(app)?, data, root_dirs, &summary)?;
@@ -1099,7 +1114,6 @@ fn do_scan(
                 reused,
                 total_to_index,
                 removed,
-                &thumbnail_summary,
             )),
             ..empty_progress()
         },
@@ -1392,7 +1406,6 @@ fn format_scan_complete_message(
     reused: usize,
     changed: usize,
     removed: usize,
-    thumbnails: &ThumbnailCacheSummary,
 ) -> String {
     let mut parts = if changed == 0 && removed == 0 && reused > 0 {
         vec![format!(
@@ -1412,11 +1425,6 @@ fn format_scan_complete_message(
     }
     if removed > 0 {
         parts.push(format!("{} removed", removed));
-    }
-    if thumbnails.failed > 0 {
-        parts.push(format!("{} thumbnails failed", thumbnails.failed));
-    } else {
-        parts.push(format!("{} thumbnails ready", thumbnails.total));
     }
     parts.join(" - ")
 }
@@ -1622,6 +1630,85 @@ fn ensure_cached_render_path_in(
     Ok((output_path, true))
 }
 
+fn schedule_thumbnail_prebuild(app: &AppHandle, photos: Vec<PhotoAsset>, root_summary: String) {
+    if photos.is_empty() {
+        return;
+    }
+
+    let build_state = app.state::<ThumbnailBuildState>();
+    let mut active = build_state
+        .active
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if *active {
+        return;
+    }
+    *active = true;
+    drop(active);
+
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let build_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let (thumbnails, thumbnail_warnings) =
+                pregenerate_thumbnails(&app, &photos, &root_summary);
+
+            let state = app.state::<GridModeState>();
+            match state.inner.lock() {
+                Ok(mut data) => {
+                    merge_thumbnail_warnings(&mut data.cached_summary, thumbnail_warnings);
+                    let root_dirs = get_photo_directories(&data.settings);
+                    let summary = data.cached_summary.clone();
+                    if let Ok(data_dir) = app_data_dir(&app) {
+                        if let Err(error) =
+                            write_library_index(&data_dir, &data, &root_dirs, &summary)
+                        {
+                            log::warn!("Could not persist thumbnail warnings: {error}");
+                        }
+                    }
+                }
+                Err(_) => log::warn!("Could not update library after thumbnail prebuild."),
+            }
+
+            let _ = app.emit(
+                "scan:progress",
+                ScanProgress {
+                    phase: "complete".to_string(),
+                    root_dir: Some(root_summary.clone()),
+                    photos_found: Some(thumbnails.total),
+                    photos_processed: Some(thumbnails.total),
+                    thumbnails_generated: Some(thumbnails.generated),
+                    thumbnails_reused: Some(thumbnails.reused),
+                    thumbnail_failures: Some(thumbnails.failed),
+                    total_photos: Some(thumbnails.total),
+                    message: Some(format_thumbnail_complete_message(&thumbnails)),
+                    ..empty_progress()
+                },
+            );
+        }));
+
+        if build_result.is_err() {
+            log::error!("Thumbnail prebuild stopped unexpectedly.");
+        }
+
+        let build_state = app.state::<ThumbnailBuildState>();
+        let mut active = build_state
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active = false;
+        build_state.available.notify_all();
+    });
+}
+
+fn wait_for_thumbnail_prebuild(app: &AppHandle) -> Result<(), String> {
+    let build_state = app.state::<ThumbnailBuildState>();
+    let mut active = build_state.active.lock().map_err(lock_error)?;
+    while *active {
+        active = build_state.available.wait(active).map_err(lock_error)?;
+    }
+    Ok(())
+}
+
 fn pregenerate_thumbnails(
     app: &AppHandle,
     photos: &[PhotoAsset],
@@ -1668,7 +1755,7 @@ fn pregenerate_thumbnails(
     let warnings = Mutex::new(Vec::new());
     let last_reported = Mutex::new(0usize);
     let report_interval = (total.saturating_add(99) / 100).max(1);
-    let worker_count = image_render_job_limit().min(total);
+    let worker_count = image_render_job_limit().saturating_sub(1).max(1).min(total);
 
     std::thread::scope(|scope| {
         for _ in 0..worker_count {
@@ -2849,6 +2936,10 @@ pub fn run() {
             let data = StateData::load(app.handle()).map_err(std::io::Error::other)?;
             app.manage(GridModeState {
                 inner: Mutex::new(data),
+            });
+            app.manage(ThumbnailBuildState {
+                active: Mutex::new(false),
+                available: Condvar::new(),
             });
             app.manage(PendingUpdateState {
                 inner: Mutex::new(None),

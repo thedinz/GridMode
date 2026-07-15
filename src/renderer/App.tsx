@@ -202,7 +202,7 @@ export function App(): JSX.Element {
         mergeState({ settings, summary });
         const photoDirectories = getPhotoDirectories(settings);
         if (photoDirectories.length > 0) {
-          const hasCachedLibrary = summary.photoCount > 0 || Boolean(summary.lastScanAt);
+          const hasCachedLibrary = summary.photoCount > 0;
           if (hasCachedLibrary) {
             await loadHome({ label: "Loading cached library" });
             if (mounted) {
@@ -603,6 +603,10 @@ export function App(): JSX.Element {
   ]);
 
   const hasPhotoDirectory = getPhotoDirectories(state.settings).length > 0;
+  const backgroundThumbnailProgress =
+    !state.loading && state.scanProgress?.phase === "generating-thumbnails"
+      ? state.scanProgress
+      : undefined;
 
   return (
     <div className={hasPhotoDirectory ? "app-shell" : "app-shell first-run-shell"}>
@@ -624,6 +628,11 @@ export function App(): JSX.Element {
           <LoadingOverlay
             label={state.statusText ?? "Loading"}
             progress={state.scanProgress}
+          />
+        ) : backgroundThumbnailProgress ? (
+          <LoadingOverlay
+            label="Building thumbnail cache in background"
+            progress={backgroundThumbnailProgress}
           />
         ) : null}
         {content}
@@ -1436,20 +1445,39 @@ function Metric({ label, value }: { label: string; value: string }): JSX.Element
 }
 
 function LoadingOverlay({ label, progress }: { label: string; progress?: ScanProgress }): JSX.Element {
-  const percent =
-    (progress?.phase === "reading-metadata" || progress?.phase === "generating-thumbnails") && progress.totalPhotos
-      ? Math.round(((progress.photosProcessed ?? 0) / progress.totalPhotos) * 100)
-      : undefined;
+  const percent = getScanProgressPercent(progress);
 
   return (
     <div className="loading-overlay">
       <RefreshCcw size={22} />
-      <div>
+      <div className="loading-copy">
         <span>{label}</span>
         {progress ? <small>{formatScanProgress(progress, percent)}</small> : null}
+        <div
+          className={`scan-progress-track${percent === undefined ? " indeterminate" : ""}`}
+          role="progressbar"
+          aria-label={label}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+        >
+          <i style={percent === undefined ? undefined : { width: `${percent}%` }} />
+        </div>
       </div>
     </div>
   );
+}
+
+function getScanProgressPercent(progress?: ScanProgress): number | undefined {
+  if (
+    !progress ||
+    (progress.phase !== "reading-metadata" && progress.phase !== "generating-thumbnails") ||
+    !progress.totalPhotos
+  ) {
+    return undefined;
+  }
+
+  return Math.min(100, Math.round(((progress.photosProcessed ?? 0) / progress.totalPhotos) * 100));
 }
 
 function formatScanProgress(progress: ScanProgress, percent: number | undefined): string {
