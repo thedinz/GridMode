@@ -540,7 +540,7 @@ export function App(): JSX.Element {
           onRebuildThumbnails={rebuildThumbnails}
           onClearCache={clearCache}
           libraryStatusText={state.settingsStatusText}
-          isBusy={state.loading}
+          isBusy={state.loading || state.scanProgress?.phase === "generating-thumbnails"}
           updateStatus={updateStatus}
           onCheckUpdates={() => void gridModeApi.updates.check()}
         />

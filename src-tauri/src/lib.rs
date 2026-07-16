@@ -117,7 +117,6 @@ struct GridModeState {
 
 struct ThumbnailBuildState {
     active: Mutex<bool>,
-    available: Condvar,
 }
 
 struct PendingUpdateState {
@@ -531,38 +530,68 @@ fn settings_remove_root(
 }
 
 #[tauri::command]
-fn settings_clear_cache(
-    app: AppHandle,
-    state: State<'_, GridModeState>,
-) -> Result<SettingsPayload, String> {
-    wait_for_thumbnail_prebuild(&app)?;
+async fn settings_clear_cache(app: AppHandle) -> Result<SettingsPayload, String> {
+    if !try_begin_thumbnail_prebuild(&app)? {
+        return Err("Thumbnail generation is already in progress.".to_string());
+    }
+
+    let worker_app = app.clone();
+    let clear_result =
+        tauri::async_runtime::spawn_blocking(move || clear_image_cache(&worker_app)).await;
+    finish_thumbnail_prebuild(&app);
+
+    clear_result
+        .map_err(|error| format!("Image cache cleanup stopped unexpectedly: {error}"))??;
+    let state = app.state::<GridModeState>();
     let data = state.inner.lock().map_err(lock_error)?;
-    clear_image_cache(&app)?;
     Ok(settings_payload(&data))
 }
 
 #[tauri::command]
-fn settings_rebuild_thumbnails(
-    app: AppHandle,
-    state: State<'_, GridModeState>,
-) -> Result<ThumbnailRebuildPayload, String> {
-    wait_for_thumbnail_prebuild(&app)?;
-    let mut data = state.inner.lock().map_err(lock_error)?;
-    clear_thumbnail_cache(&app)?;
-    ensure_library_locked(&app, &mut data, false)?;
+async fn settings_rebuild_thumbnails(app: AppHandle) -> Result<ThumbnailRebuildPayload, String> {
+    if !try_begin_thumbnail_prebuild(&app)? {
+        return Err("Thumbnail generation is already in progress.".to_string());
+    }
 
-    let root_dirs = get_photo_directories(&data.settings);
-    let root_summary =
-        format_root_summary(&root_dirs).unwrap_or_else(|| "Photo library".to_string());
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        rebuild_thumbnails_blocking(&worker_app)
+    })
+    .await;
+    finish_thumbnail_prebuild(&app);
+
+    result
+        .map_err(|error| format!("Thumbnail rebuild stopped unexpectedly: {error}"))?
+}
+
+fn rebuild_thumbnails_blocking(app: &AppHandle) -> Result<ThumbnailRebuildPayload, String> {
+    let (photos, root_summary) = {
+        let state = app.state::<GridModeState>();
+        let mut data = state.inner.lock().map_err(lock_error)?;
+        ensure_library_locked(app, &mut data, false)?;
+        let root_dirs = get_photo_directories(&data.settings);
+        let root_summary =
+            format_root_summary(&root_dirs).unwrap_or_else(|| "Photo library".to_string());
+        (data.cached_photos.clone(), root_summary)
+    };
+
+    clear_thumbnail_cache(app)?;
     let (thumbnails, thumbnail_warnings) =
-        pregenerate_thumbnails(&app, &data.cached_photos, &root_summary);
-    merge_thumbnail_warnings(&mut data.cached_summary, thumbnail_warnings);
-    write_library_index(
-        &app_data_dir(&app)?,
-        &data,
-        &root_dirs,
-        &data.cached_summary,
-    )?;
+        pregenerate_thumbnails(app, &photos, &root_summary);
+
+    let payload = {
+        let state = app.state::<GridModeState>();
+        let mut data = state.inner.lock().map_err(lock_error)?;
+        merge_thumbnail_warnings(&mut data.cached_summary, thumbnail_warnings);
+        let root_dirs = get_photo_directories(&data.settings);
+        let summary = data.cached_summary.clone();
+        write_library_index(&app_data_dir(app)?, &data, &root_dirs, &summary)?;
+        ThumbnailRebuildPayload {
+            settings: data.settings.clone(),
+            summary,
+            thumbnails: thumbnails.clone(),
+        }
+    };
 
     let message = format_thumbnail_complete_message(&thumbnails);
     let _ = app.emit(
@@ -581,11 +610,7 @@ fn settings_rebuild_thumbnails(
         },
     );
 
-    Ok(ThumbnailRebuildPayload {
-        settings: data.settings.clone(),
-        summary: data.cached_summary.clone(),
-        thumbnails,
-    })
+    Ok(payload)
 }
 
 #[tauri::command]
@@ -1685,8 +1710,29 @@ fn ensure_cached_render_path_in(
     render_image(file_path, &temp_path, variant).inspect_err(|_| {
         let _ = fs::remove_file(&temp_path);
     })?;
-    fs::rename(&temp_path, &output_path).map_err(|error| error.to_string())?;
-    Ok((output_path, true))
+    let was_generated = publish_cached_render(&temp_path, &output_path)?;
+    Ok((output_path, was_generated))
+}
+
+fn publish_cached_render(temp_path: &Path, output_path: &Path) -> Result<bool, String> {
+    if output_path.exists() {
+        let _ = fs::remove_file(temp_path);
+        return Ok(false);
+    }
+
+    match fs::rename(temp_path, output_path) {
+        Ok(()) => Ok(true),
+        Err(_) if output_path.exists() => {
+            // An on-demand request and the background prebuilder can finish the same
+            // image at the same time. Windows will not replace the winner's file.
+            let _ = fs::remove_file(temp_path);
+            Ok(false)
+        }
+        Err(error) => {
+            let _ = fs::remove_file(temp_path);
+            Err(error.to_string())
+        }
+    }
 }
 
 fn schedule_thumbnail_prebuild(app: &AppHandle, photos: Vec<PhotoAsset>, root_summary: String) {
@@ -1694,16 +1740,9 @@ fn schedule_thumbnail_prebuild(app: &AppHandle, photos: Vec<PhotoAsset>, root_su
         return;
     }
 
-    let build_state = app.state::<ThumbnailBuildState>();
-    let mut active = build_state
-        .active
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if *active {
+    if !try_begin_thumbnail_prebuild(app).unwrap_or(false) {
         return;
     }
-    *active = true;
-    drop(active);
 
     let app = app.clone();
     std::thread::spawn(move || {
@@ -1749,23 +1788,27 @@ fn schedule_thumbnail_prebuild(app: &AppHandle, photos: Vec<PhotoAsset>, root_su
             log::error!("Thumbnail prebuild stopped unexpectedly.");
         }
 
-        let build_state = app.state::<ThumbnailBuildState>();
-        let mut active = build_state
-            .active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *active = false;
-        build_state.available.notify_all();
+        finish_thumbnail_prebuild(&app);
     });
 }
 
-fn wait_for_thumbnail_prebuild(app: &AppHandle) -> Result<(), String> {
+fn try_begin_thumbnail_prebuild(app: &AppHandle) -> Result<bool, String> {
     let build_state = app.state::<ThumbnailBuildState>();
     let mut active = build_state.active.lock().map_err(lock_error)?;
-    while *active {
-        active = build_state.available.wait(active).map_err(lock_error)?;
+    if *active {
+        return Ok(false);
     }
-    Ok(())
+    *active = true;
+    Ok(true)
+}
+
+fn finish_thumbnail_prebuild(app: &AppHandle) {
+    let build_state = app.state::<ThumbnailBuildState>();
+    let mut active = build_state
+        .active
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    *active = false;
 }
 
 fn pregenerate_thumbnails(
@@ -3039,6 +3082,31 @@ mod tests {
 
         assert!(directory_breadcrumbs(&roots, "__gridmode_other__/Pictures").is_none());
     }
+
+    #[test]
+    fn publishing_a_thumbnail_accepts_a_concurrent_winner() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("test clock should be after the Unix epoch")
+            .as_nanos();
+        let test_dir = std::env::temp_dir().join(format!(
+            "gridmode-thumbnail-publish-{}-{stamp}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&test_dir).expect("test directory should be created");
+        let output_path = test_dir.join("thumbnail.jpg");
+        let temp_path = test_dir.join("thumbnail.tmp");
+        fs::write(&output_path, b"winner").expect("winner should be written");
+        fs::write(&temp_path, b"contender").expect("contender should be written");
+
+        let generated = publish_cached_render(&temp_path, &output_path)
+            .expect("an existing completed thumbnail should win the race");
+
+        assert!(!generated);
+        assert_eq!(fs::read(&output_path).unwrap(), b"winner");
+        assert!(!temp_path.exists());
+        fs::remove_dir_all(test_dir).expect("test directory should be removed");
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3068,7 +3136,6 @@ pub fn run() {
             });
             app.manage(ThumbnailBuildState {
                 active: Mutex::new(false),
-                available: Condvar::new(),
             });
             app.manage(PendingUpdateState {
                 inner: Mutex::new(None),
