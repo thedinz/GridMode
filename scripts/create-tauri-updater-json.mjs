@@ -22,7 +22,7 @@ const windowsDir = process.argv[4]
   : path.join(repoRoot, "src-tauri/target/release/bundle/nsis");
 const macDir = process.argv[5]
   ? path.resolve(process.argv[5])
-  : path.join(repoRoot, "src-tauri/target/release/bundle/macos");
+  : path.join(repoRoot, "src-tauri/target/universal-apple-darwin/release/bundle/macos");
 
 if (!version || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
   console.error("Usage: node scripts/create-tauri-updater-json.mjs <major.minor.patch> [output] [windows-dir] [mac-dir]");
@@ -34,6 +34,10 @@ const windowsSignature = signatureFor(windowsInstaller);
 const macArchive = findFile(macDir, (fileName) => fileName.toLowerCase().endsWith(".app.tar.gz"));
 const macSignature = signatureFor(macArchive);
 const releaseBaseUrl = `https://github.com/thedinz/GridMode/releases/download/v${version}`;
+const universalMacUpdate = {
+  signature: readFileSync(macSignature, "utf8").trim(),
+  url: `${releaseBaseUrl}/${encodeAssetName(path.basename(macArchive))}`
+};
 
 const manifest = {
   version,
@@ -45,14 +49,31 @@ const manifest = {
       url: `${releaseBaseUrl}/${encodeAssetName(path.basename(windowsInstaller))}`
     },
     "darwin-x86_64": {
-      signature: readFileSync(macSignature, "utf8").trim(),
-      url: `${releaseBaseUrl}/${encodeAssetName(path.basename(macArchive))}`
+      ...universalMacUpdate
+    },
+    "darwin-aarch64": {
+      ...universalMacUpdate
     }
   }
 };
 
+validateUniversalMacUpdate(manifest);
 writeFileSync(outputPath, `${JSON.stringify(manifest, null, 2)}\n`);
 console.log(`Wrote Tauri updater metadata: ${outputPath}`);
+
+function validateUniversalMacUpdate(candidate) {
+  const intel = candidate.platforms?.["darwin-x86_64"];
+  const appleSilicon = candidate.platforms?.["darwin-aarch64"];
+  if (!intel || !appleSilicon) {
+    throw new Error("The updater manifest must include both Intel and Apple Silicon Mac targets.");
+  }
+  if (!intel.signature || intel.signature !== appleSilicon.signature) {
+    throw new Error("Both Mac updater targets must use the same universal archive signature.");
+  }
+  if (!intel.url || intel.url !== appleSilicon.url || !intel.url.toLowerCase().endsWith(".app.tar.gz")) {
+    throw new Error("Both Mac updater targets must use the same universal .app.tar.gz archive.");
+  }
+}
 
 function findFile(directory, predicate) {
   if (!existsSync(directory) || !statSync(directory).isDirectory()) {

@@ -24,11 +24,14 @@ the Tauri installer. This should still be validated on a Windows machine before
 calling the migration release done, because Tauri's NSIS installer is not the
 same installer generator Electron Builder used.
 
-## Future updates
+## Updates
 
-After Windows users have migrated to the Tauri app, automatic updates should be
-implemented with Tauri updater artifacts and signing keys. Until that is wired
-in, the in-app update controls report that automatic updates are not configured.
+Automatic updates use Tauri updater artifacts and signing keys. The macOS
+manifest maps both Intel and Apple Silicon updater targets to the same universal
+app archive. Existing Intel installations therefore update directly to the
+universal build, and native Apple Silicon installations receive that same build.
 
 macOS remains on a manual GitHub Releases download path until Developer ID
-signing and notarization are configured.
+signing and notarization are configured if the automatic updater is unavailable.
+Its release artifact is a universal binary supporting both Intel and Apple
+Silicon Macs.

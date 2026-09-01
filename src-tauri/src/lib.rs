@@ -17,6 +17,8 @@ use std::{
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 use tauri::{http, AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_updater::{Update, UpdaterExt};
@@ -33,6 +35,8 @@ const JPEG_END_OF_IMAGE_MARKER: u8 = 0xd9;
 const EXIF_HEADER: &[u8; 6] = b"Exif\0\0";
 const TIFF_ORIENTATION_TAG: u16 = 0x0112;
 const TIFF_TYPE_SHORT: u16 = 3;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const MONTH_NAMES: [&str; 12] = [
     "January",
@@ -1996,12 +2000,21 @@ fn render_image(
     output_path: &Path,
     variant: PhotoRenderVariant,
 ) -> Result<(), String> {
-    let image = ImageReader::open(file_path)
-        .map_err(|error| error.to_string())?
-        .with_guessed_format()
-        .map_err(|error| error.to_string())?
-        .decode()
-        .map_err(|error| error.to_string())?;
+    let metadata = fs::metadata(file_path).map_err(|error| error.to_string())?;
+    if metadata.len() == 0 {
+        return Err("Image file is empty.".to_string());
+    }
+
+    let image = match decode_image(file_path) {
+        Ok(image) => image,
+        Err(primary_error) => decode_image_with_system_fallback(file_path, output_path).map_err(
+            |fallback_error| {
+                format!(
+                    "{primary_error}; system image decoder fallback failed: {fallback_error}"
+                )
+            },
+        )?,
+    };
     let image = apply_exif_orientation(file_path, image);
     let rendered = match variant {
         PhotoRenderVariant::Thumb => resize_to_cover(image, THUMBNAIL_SIZE),
@@ -2010,6 +2023,122 @@ fn render_image(
         }
     };
     write_jpeg(output_path, &rendered, jpeg_quality_for_variant(variant))
+}
+
+fn decode_image(file_path: &str) -> Result<DynamicImage, String> {
+    ImageReader::open(file_path)
+        .map_err(|error| error.to_string())?
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?
+        .decode()
+        .map_err(|error| error.to_string())
+}
+
+fn decode_image_with_system_fallback(
+    file_path: &str,
+    output_path: &Path,
+) -> Result<DynamicImage, String> {
+    let scratch_path = system_decode_scratch_path(output_path);
+    let conversion = convert_with_system_image_codec(file_path, &scratch_path);
+    if let Err(error) = conversion {
+        let _ = fs::remove_file(&scratch_path);
+        return Err(error);
+    }
+
+    let decoded = decode_image(
+        scratch_path
+            .to_str()
+            .ok_or_else(|| "System decoder output path was not UTF-8.".to_string())?,
+    );
+    let _ = fs::remove_file(&scratch_path);
+    decoded.map_err(|error| format!("Could not read system decoder output: {error}"))
+}
+
+fn system_decode_scratch_path(output_path: &Path) -> PathBuf {
+    let file_name = output_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("render");
+    output_path.with_file_name(format!("{file_name}.system.png"))
+}
+
+#[cfg(target_os = "windows")]
+fn convert_with_system_image_codec(file_path: &str, output_path: &Path) -> Result<(), String> {
+    const WINDOWS_IMAGE_CONVERSION_SCRIPT: &str = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName PresentationCore
+$inputStream = [System.IO.File]::OpenRead($env:GRIDMODE_IMAGE_SOURCE)
+try {
+  $decoder = [System.Windows.Media.Imaging.BitmapDecoder]::Create(
+    $inputStream,
+    [System.Windows.Media.Imaging.BitmapCreateOptions]::PreservePixelFormat,
+    [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+  )
+} finally {
+  $inputStream.Dispose()
+}
+$encoder = [System.Windows.Media.Imaging.PngBitmapEncoder]::new()
+$encoder.Frames.Add($decoder.Frames[0])
+$outputStream = [System.IO.File]::Create($env:GRIDMODE_IMAGE_OUTPUT)
+try {
+  $encoder.Save($outputStream)
+} finally {
+  $outputStream.Dispose()
+}
+"#;
+
+    let result = Command::new("powershell.exe")
+        .args([
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            WINDOWS_IMAGE_CONVERSION_SCRIPT,
+        ])
+        .env("GRIDMODE_IMAGE_SOURCE", file_path)
+        .env("GRIDMODE_IMAGE_OUTPUT", output_path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("Could not start the Windows image decoder: {error}"))?;
+    system_codec_command_result("Windows image decoder", result)
+}
+
+#[cfg(target_os = "macos")]
+fn convert_with_system_image_codec(file_path: &str, output_path: &Path) -> Result<(), String> {
+    let result = Command::new("sips")
+        .args(["-s", "format", "png", file_path, "--out"])
+        .arg(output_path)
+        .output()
+        .map_err(|error| format!("Could not start the macOS image decoder: {error}"))?;
+    system_codec_command_result("macOS image decoder", result)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn convert_with_system_image_codec(_file_path: &str, _output_path: &Path) -> Result<(), String> {
+    Err("No system image decoder is available on this platform.".to_string())
+}
+
+fn system_codec_command_result(
+    decoder_name: &str,
+    result: std::process::Output,
+) -> Result<(), String> {
+    if result.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&result.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&result.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() { stderr } else { stdout };
+    if detail.is_empty() {
+        Err(format!(
+            "{decoder_name} exited with status {}.",
+            result.status
+        ))
+    } else {
+        Err(format!("{decoder_name}: {detail}"))
+    }
 }
 
 fn apply_exif_orientation(file_path: &str, image: DynamicImage) -> DynamicImage {
@@ -2238,6 +2367,10 @@ fn text_response(status: http::StatusCode, message: &str) -> http::Response<Vec<
 }
 
 fn needs_rendered_display(file_path: &str) -> bool {
+    if has_heif_content(file_path) {
+        return true;
+    }
+
     Path::new(file_path)
         .extension()
         .and_then(|value| value.to_str())
@@ -2246,6 +2379,35 @@ fn needs_rendered_display(file_path: &str) -> bool {
             !BROWSER_NATIVE_EXTENSIONS.contains(&normalized.as_str())
         })
         .unwrap_or(true)
+}
+
+fn has_heif_content(file_path: &str) -> bool {
+    let mut header = [0_u8; 64];
+    let Ok(mut file) = fs::File::open(file_path) else {
+        return false;
+    };
+    let Ok(bytes_read) = file.read(&mut header) else {
+        return false;
+    };
+    has_heif_header(&header[..bytes_read])
+}
+
+fn has_heif_header(header: &[u8]) -> bool {
+    header
+        .get(4..8)
+        .is_some_and(|signature| signature == b"ftyp")
+        && header.windows(4).any(|brand| {
+            brand == b"heic"
+                || brand == b"heix"
+                || brand == b"hevc"
+                || brand == b"hevx"
+                || brand == b"heim"
+                || brand == b"heis"
+                || brand == b"hevm"
+                || brand == b"hevs"
+                || brand == b"mif1"
+                || brand == b"msf1"
+        })
 }
 
 fn mime_type_for_path(file_path: &str) -> &'static str {
@@ -2901,12 +3063,7 @@ async fn macos_manual_download_update_status() -> Result<Option<UpdateStatus>, S
         return Ok(None);
     }
 
-    let download_url = release
-        .assets
-        .iter()
-        .find(|asset| asset.name.to_lowercase().ends_with(".dmg"))
-        .map(|asset| asset.browser_download_url.clone())
-        .unwrap_or(release.html_url);
+    let download_url = macos_release_download_url(&release).unwrap_or(release.html_url);
     validate_external_download_url(&download_url)?;
 
     Ok(Some(UpdateStatus {
@@ -2917,6 +3074,22 @@ async fn macos_manual_download_update_status() -> Result<Option<UpdateStatus>, S
         download_url: Some(download_url),
         manual_download: Some(true),
     }))
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn macos_release_download_url(release: &GitHubRelease) -> Option<String> {
+    let mut dmg_assets = release
+        .assets
+        .iter()
+        .filter(|asset| asset.name.to_lowercase().ends_with(".dmg"));
+    let first_dmg = dmg_assets.next();
+    first_dmg
+        .filter(|asset| asset.name.to_lowercase().contains("universal"))
+        .or_else(|| {
+            dmg_assets.find(|asset| asset.name.to_lowercase().contains("universal"))
+        })
+        .or(first_dmg)
+        .map(|asset| asset.browser_download_url.clone())
 }
 
 fn normalize_version_tag(version: &str) -> String {
@@ -3081,6 +3254,37 @@ mod tests {
         let roots = vec!["__gridmode_test_library__".to_string()];
 
         assert!(directory_breadcrumbs(&roots, "__gridmode_other__/Pictures").is_none());
+    }
+
+    #[test]
+    fn mac_download_fallback_prefers_the_universal_dmg() {
+        let release = GitHubRelease {
+            tag_name: "v0.2.0".to_string(),
+            html_url: "https://github.com/thedinz/GridMode/releases/tag/v0.2.0".to_string(),
+            assets: vec![
+                GitHubReleaseAsset {
+                    name: "GridMode_0.2.0_x64.dmg".to_string(),
+                    browser_download_url: "https://github.com/thedinz/GridMode/releases/download/v0.2.0/GridMode_0.2.0_x64.dmg".to_string(),
+                },
+                GitHubReleaseAsset {
+                    name: "GridMode_0.2.0_universal.dmg".to_string(),
+                    browser_download_url: "https://github.com/thedinz/GridMode/releases/download/v0.2.0/GridMode_0.2.0_universal.dmg".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            macos_release_download_url(&release).as_deref(),
+            Some("https://github.com/thedinz/GridMode/releases/download/v0.2.0/GridMode_0.2.0_universal.dmg")
+        );
+    }
+
+    #[test]
+    fn heif_content_is_detected_even_with_a_jpeg_file_name() {
+        let header = b"\0\0\0\x18ftypheic\0\0\0\0mif1";
+
+        assert!(has_heif_header(header));
+        assert!(!has_heif_header(b"\xff\xd8\xff\xe0JFIF"));
     }
 
     #[test]

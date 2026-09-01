@@ -105,6 +105,8 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -114,17 +116,50 @@ jobs:
         env:
           GRIDMODE_VERSION: 0.1.${{ github.run_number }}
 
-      - name: Build unsigned Mac download
+      - name: Build unsigned universal Mac download
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: pnpm dist:mac
 
+      - name: Verify universal Mac executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=(src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app)
+          if [[ ${#apps[@]} -ne 1 ]]; then
+            echo "Expected exactly one Mac app bundle, found ${#apps[@]}." >&2
+            exit 1
+          fi
+
+          executables=("${apps[0]}"/Contents/MacOS/*)
+          app_executable=""
+          for candidate in "${executables[@]}"; do
+            if [[ -f "$candidate" && -x "$candidate" ]]; then
+              app_executable="$candidate"
+              break
+            fi
+          done
+          if [[ -z "$app_executable" ]]; then
+            echo "No executable found in ${apps[0]}/Contents/MacOS." >&2
+            exit 1
+          fi
+
+          architectures="$(lipo -archs "$app_executable")"
+          for required_architecture in x86_64 arm64; do
+            if [[ " $architectures " != *" $required_architecture "* ]]; then
+              echo "Missing $required_architecture slice in $app_executable ($architectures)." >&2
+              exit 1
+            fi
+          done
+          echo "Verified universal executable: $architectures"
+
       - name: Upload Mac DMG to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GRIDMODE_VERSION: 0.1.${{ github.run_number }}
-        run: gh release upload "v${GRIDMODE_VERSION}" src-tauri/target/release/bundle/dmg/*.dmg src-tauri/target/release/bundle/macos/*.app.tar.gz src-tauri/target/release/bundle/macos/*.app.tar.gz.sig --clobber --repo thedinz/GridMode
+        run: gh release upload "v${GRIDMODE_VERSION}" src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig --clobber --repo thedinz/GridMode
 
       - name: Download Windows updater artifact
         uses: actions/download-artifact@v4
@@ -137,17 +172,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GRIDMODE_VERSION: 0.1.${{ github.run_number }}
         run: |
-          node scripts/create-tauri-updater-json.mjs "$GRIDMODE_VERSION" "$PWD/latest.json" "$PWD/release-artifacts/windows" "$PWD/src-tauri/target/release/bundle/macos"
+          node scripts/create-tauri-updater-json.mjs "$GRIDMODE_VERSION" "$PWD/latest.json" "$PWD/release-artifacts/windows" "$PWD/src-tauri/target/universal-apple-darwin/release/bundle/macos"
           gh release upload "v${GRIDMODE_VERSION}" "$PWD/latest.json" --clobber --repo thedinz/GridMode
           gh release edit "v${GRIDMODE_VERSION}" --draft=false --latest --repo thedinz/GridMode
 
       - name: Upload Mac workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: GridMode-mac-unsigned
+          name: GridMode-mac-universal-unsigned
           path: |
-            src-tauri/target/release/bundle/dmg/*.dmg
-            src-tauri/target/release/bundle/macos/*.app.tar.gz
-            src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
             latest.json
           if-no-files-found: error
