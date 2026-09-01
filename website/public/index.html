@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#151512" />
+    <meta name="description" content="GridMode is a fast, private desktop photo viewer built around the folders you already have." />
+    <meta property="og:title" content="GridMode — Your photos, already organized" />
+    <meta property="og:description" content="A fast, private desktop photo viewer built around your folders." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="/assets/app-dashboard.png" />
+    <title>GridMode — Your photos, already organized</title>
+    <link rel="icon" href="/assets/gridmode-logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="GridMode home">
+        <img src="/assets/gridmode-logo.svg" alt="" width="42" height="42" />
+        <span>GridMode</span>
+      </a>
+      <nav class="header-nav" aria-label="Primary navigation">
+        <a href="#features">Features</a>
+        <a class="button button-small" href="/download/">
+          <span>Download</span>
+          <span aria-hidden="true">↓</span>
+        </a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="ambient ambient-mint" aria-hidden="true"></div>
+        <div class="ambient ambient-amber" aria-hidden="true"></div>
+        <div class="eyebrow"><span class="status-dot"></span> Native photo viewing for Windows &amp; macOS</div>
+        <h1 id="hero-title">Your photos.<br /><span>Already organized.</span></h1>
+        <p class="hero-copy">
+          GridMode turns the folders you already have into a fast, beautiful photo library—without uploads,
+          accounts, or another system to maintain.
+        </p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="/download/">
+            <span>Download GridMode</span>
+            <span aria-hidden="true">↓</span>
+          </a>
+          <span class="release-note" data-latest-version>Checking the latest release…</span>
+        </div>
+
+        <figure class="app-preview">
+          <div class="preview-frame">
+            <span class="window-dot"></span><span class="window-dot"></span><span class="window-dot"></span>
+            <img
+              src="/assets/app-dashboard.png"
+              alt="GridMode dashboard displaying a grid of fictional landscape and still-life photos"
+              width="1440"
+              height="900"
+            />
+          </div>
+          <figcaption>Fictional demo library. No personal photos were used.</figcaption>
+        </figure>
+      </section>
+
+      <section class="value-strip" aria-label="GridMode highlights">
+        <p><span>01</span> Your folders stay the source of truth</p>
+        <p><span>02</span> EXIF dates build your timeline</p>
+        <p><span>03</span> Everything stays on your device</p>
+      </section>
+
+      <section class="features" id="features" aria-labelledby="features-title">
+        <div class="section-heading">
+          <p class="kicker">Made for wandering</p>
+          <h2 id="features-title">Less organizing.<br />More remembering.</h2>
+        </div>
+        <div class="feature-grid">
+          <article class="feature feature-large">
+            <span class="feature-number">01</span>
+            <div class="feature-icon icon-grid" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+            <h3>Open a folder. See everything.</h3>
+            <p>Choose one or more photo folders and GridMode builds a responsive, shuffle-ready visual library.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-number">02</span>
+            <div class="feature-icon icon-calendar" aria-hidden="true"><i></i><i></i><i></i></div>
+            <h3>A timeline, automatically</h3>
+            <p>Browse by year and month using the dates already embedded in your photos.</p>
+          </article>
+          <article class="feature">
+            <span class="feature-number">03</span>
+            <div class="feature-icon icon-lock" aria-hidden="true"><i></i></div>
+            <h3>Private by design</h3>
+            <p>No cloud library, no sign-in, and no copies of your originals leaving the computer.</p>
+          </article>
+          <article class="feature feature-wide">
+            <span class="feature-number">04</span>
+            <div>
+              <h3>Built to feel immediate</h3>
+              <p>Native desktop performance, cached thumbnails, broad image-format support, and quick metadata details.</p>
+            </div>
+            <div class="format-list" aria-label="Supported image formats">
+              <span>JPEG</span><span>PNG</span><span>WEBP</span><span>TIFF</span><span>HEIC</span><span>AVIF</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="closing" aria-labelledby="closing-title">
+        <img src="/assets/gridmode-logo.svg" alt="" width="96" height="96" />
+        <p class="kicker">Your archive, at a glance</p>
+        <h2 id="closing-title">Rediscover what’s<br />already on your drive.</h2>
+        <a class="button button-primary" href="/download/">
+          <span>Get GridMode</span>
+          <span aria-hidden="true">→</span>
+        </a>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <a class="brand brand-small" href="/">
+        <img src="/assets/gridmode-logo.svg" alt="" width="32" height="32" />
+        <span>GridMode</span>
+      </a>
+      <p>Photos stay local. Memories stay yours.</p>
+      <p>© <span data-current-year></span> GridMode</p>
+    </footer>
+  </body>
+</html>

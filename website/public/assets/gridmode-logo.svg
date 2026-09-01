@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">GridMode</title>
+  <circle cx="256" cy="256" r="226" fill="#2b2e3b"/>
+  <g fill="none" stroke="#d8faff" stroke-linecap="round" stroke-width="14">
+    <path d="M126 338C163 265 260 183 386 159"/>
+    <path d="M126 338C192 392 306 399 386 341"/>
+    <path d="M257 112C333 166 350 273 321 345"/>
+    <path d="M132 273C94 214 123 158 211 166"/>
+    <path d="M334 162C401 166 417 224 364 274"/>
+    <path d="M194 352C217 417 270 433 306 377"/>
+  </g>
+  <g fill="#2b2e3b" stroke="#d8faff" stroke-width="13">
+    <circle cx="126" cy="338" r="17"/>
+    <circle cx="257" cy="112" r="17"/>
+    <circle cx="386" cy="341" r="17"/>
+  </g>
+  <circle cx="256" cy="264" r="16" fill="#d8faff"/>
+</svg>

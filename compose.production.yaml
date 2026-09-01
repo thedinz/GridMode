@@ -1,0 +1,28 @@
+name: gridmode-website
+
+services:
+  website:
+    image: ghcr.io/thedinz/gridmode-website:latest
+    container_name: gridmode-website
+    restart: unless-stopped
+    pull_policy: always
+    ports:
+      - "127.0.0.1:${GRIDMODE_SITE_PORT:-9999}:80"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /var/cache/nginx
+      - /var/run
+      - /tmp
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,14 @@
+services:
+  gridmode-site:
+    build:
+      context: .
+      dockerfile: website/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${GRIDMODE_SITE_PORT:-9999}:80"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 5s

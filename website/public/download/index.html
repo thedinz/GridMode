@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#151512" />
+    <meta name="description" content="Download the latest version of GridMode for Windows or macOS." />
+    <title>Download GridMode</title>
+    <link rel="icon" href="/assets/gridmode-logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body class="download-page">
+    <header class="site-header">
+      <a class="brand" href="/" aria-label="GridMode home">
+        <img src="/assets/gridmode-logo.svg" alt="" width="42" height="42" />
+        <span>GridMode</span>
+      </a>
+      <nav class="header-nav" aria-label="Primary navigation">
+        <a href="/">Overview</a>
+        <a href="https://github.com/thedinz/GridMode/releases/latest" data-release-link>Release notes</a>
+      </nav>
+    </header>
+
+    <main class="download-main">
+      <div class="ambient ambient-mint" aria-hidden="true"></div>
+      <div class="ambient ambient-amber" aria-hidden="true"></div>
+      <section class="download-intro" aria-labelledby="download-title">
+        <div class="eyebrow"><span class="status-dot"></span> Latest stable release</div>
+        <h1 id="download-title">Bring your library<br /><span>back into view.</span></h1>
+        <p>Download GridMode for your computer. Your photos remain exactly where they are.</p>
+        <div class="version-chip"><span>Current version</span><strong data-latest-version>Checking…</strong></div>
+      </section>
+
+      <section class="download-grid" aria-label="Platform downloads">
+        <article class="download-card" data-platform-card="windows">
+          <div class="platform-mark windows-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <p class="kicker">Windows</p>
+          <h2>GridMode for Windows</h2>
+          <p class="platform-detail">Windows 10 or later · 64-bit</p>
+          <a class="button button-primary download-button" href="https://github.com/thedinz/GridMode/releases/latest" data-download="windows">
+            <span>Download for Windows</span><span aria-hidden="true">↓</span>
+          </a>
+          <p class="asset-meta" data-asset-meta="windows">Finding the latest installer…</p>
+        </article>
+
+        <article class="download-card" data-platform-card="macos">
+          <div class="platform-mark apple-mark" aria-hidden="true">●</div>
+          <p class="kicker">macOS</p>
+          <h2>GridMode for macOS</h2>
+          <p class="platform-detail">macOS 11 or later · Intel · Apple Silicon via Rosetta 2</p>
+          <a class="button button-secondary download-button" href="https://github.com/thedinz/GridMode/releases/latest" data-download="macos">
+            <span>Download for macOS</span><span aria-hidden="true">↓</span>
+          </a>
+          <p class="asset-meta" data-asset-meta="macos">Finding the latest disk image…</p>
+        </article>
+      </section>
+
+      <section class="install-note">
+        <div>
+          <span class="note-mark">i</span>
+          <div>
+            <h2>A note about early releases</h2>
+            <p>GridMode installers may be unsigned while the project is young. Your computer can show a security prompt the first time you open it.</p>
+          </div>
+        </div>
+        <a href="https://github.com/thedinz/GridMode/releases/latest" data-release-link>View release details →</a>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <a class="brand brand-small" href="/">
+        <img src="/assets/gridmode-logo.svg" alt="" width="32" height="32" />
+        <span>GridMode</span>
+      </a>
+      <p>Photos stay local. Memories stay yours.</p>
+      <p>© <span data-current-year></span> GridMode</p>
+    </footer>
+  </body>
+</html>
