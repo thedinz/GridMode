@@ -1,13 +1,23 @@
 name: Release Desktop
 
+# Releases are deliberate: push a version tag (git tag v0.1.31 && git push origin v0.1.31)
+# or run this workflow manually with a version. Every published release reaches
+# existing users through the auto-updater, so pushes to main no longer release.
 on:
   push:
-    branches:
-      - main
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the leading v (for example 0.1.31)"
+        required: true
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
 
 jobs:
   windows:
@@ -17,6 +27,16 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      - name: Resolve release version
+        shell: bash
+        run: |
+          version="${RELEASE_TAG#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release version '$version' is not major.minor.patch."
+            exit 1
+          fi
+          echo "GRIDMODE_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
@@ -35,11 +55,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Stamp CI version
+      - name: Test before releasing
+        run: |
+          pnpm typecheck
+          pnpm test
+          pnpm test:rust
+
+      - name: Stamp release version
         shell: pwsh
         run: pnpm stamp-version $env:GRIDMODE_VERSION
-        env:
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
 
       - name: Build Windows installer
         env:
@@ -52,19 +76,17 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
         run: |
           $tag = "v$env:GRIDMODE_VERSION"
           gh release view $tag --repo thedinz/GridMode
           if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --title "GridMode $env:GRIDMODE_VERSION" --notes "GridMode $env:GRIDMODE_VERSION" --repo thedinz/GridMode --draft
+            gh release create $tag --title "GridMode $env:GRIDMODE_VERSION" --notes "GridMode $env:GRIDMODE_VERSION" --target $env:GITHUB_SHA --repo thedinz/GridMode --draft
           }
 
       - name: Upload Windows installer and signature
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
         run: |
           $tag = "v$env:GRIDMODE_VERSION"
           $installer = Get-ChildItem "src-tauri/target/release/bundle/nsis" -Filter "*.exe" | Select-Object -First 1
@@ -92,6 +114,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Resolve release version
+        run: echo "GRIDMODE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+
       - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -111,10 +136,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Stamp CI version
+      - name: Stamp release version
         run: pnpm stamp-version "$GRIDMODE_VERSION"
-        env:
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
 
       - name: Build unsigned universal Mac download
         env:
@@ -158,7 +181,6 @@ jobs:
       - name: Upload Mac DMG to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
         run: gh release upload "v${GRIDMODE_VERSION}" src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig --clobber --repo thedinz/GridMode
 
       - name: Download Windows updater artifact
@@ -170,7 +192,6 @@ jobs:
       - name: Upload Tauri updater manifest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GRIDMODE_VERSION: 0.1.${{ github.run_number }}
         run: |
           node scripts/create-tauri-updater-json.mjs "$GRIDMODE_VERSION" "$PWD/latest.json" "$PWD/release-artifacts/windows" "$PWD/src-tauri/target/universal-apple-darwin/release/bundle/macos"
           gh release upload "v${GRIDMODE_VERSION}" "$PWD/latest.json" --clobber --repo thedinz/GridMode
