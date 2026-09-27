@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  check:
+    name: Typecheck and test
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck renderer
+        run: pnpm typecheck
+
+      - name: Test renderer
+        run: pnpm test
+
+      - name: Test backend
+        run: pnpm test:rust
+
+      - name: Check generated TypeScript bindings are committed
+        shell: bash
+        run: |
+          if ! git diff --exit-code -- src/shared/generated; then
+            echo "::error::src/shared/generated is out of date. Run 'pnpm gen:types' and commit the result."
+            exit 1
+          fi
