@@ -1,108 +1,6 @@
-import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type {
-  GridModeApi,
-  DirectoryPayload,
-  HomePayload,
-  LibrarySummary,
-  MonthPayload,
-  PhotoAsset,
-  PhotoDetails,
-  ScanProgress,
-  SettingsPayload,
-  ThumbnailRebuildPayload,
-  UpdateStatus,
-  YearPayload
-} from "../shared/types";
-
-type Unsubscribe = () => void;
-
-function isTauriRuntime(): boolean {
-  return Boolean(window.__TAURI_INTERNALS__);
-}
-
-function encodePathToken(filePath: string): string {
-  const bytes = new TextEncoder().encode(filePath);
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function makeTauriPhotoUrl(filePath: string, variant: "display" | "thumb", cacheKey?: string): string {
-  const url = convertFileSrc(`${variant}/${encodePathToken(filePath)}`, "gridmode-photo");
-  return cacheKey ? `${url}?v=${encodeURIComponent(cacheKey)}` : url;
-}
-
-function convertPhoto(photo: PhotoAsset): PhotoAsset {
-  const cacheKey = photo.cacheKey || `${photo.size}-${photo.capturedAt}`;
-
-  return {
-    ...photo,
-    cacheKey,
-    url: makeTauriPhotoUrl(photo.path, "display", cacheKey),
-    thumbnailUrl: makeTauriPhotoUrl(photo.path, "thumb", cacheKey)
-  };
-}
-
-function convertSummary(summary: LibrarySummary): LibrarySummary {
-  return {
-    ...summary,
-    years: summary.years.map((year) => ({
-      ...year,
-      sample: year.sample.map(convertPhoto)
-    }))
-  };
-}
-
-function convertSettingsPayload(payload: SettingsPayload): SettingsPayload {
-  return {
-    settings: payload.settings,
-    summary: convertSummary(payload.summary)
-  };
-}
-
-function convertHomePayload(payload: HomePayload): HomePayload {
-  return {
-    summary: convertSummary(payload.summary),
-    photos: payload.photos.map(convertPhoto)
-  };
-}
-
-function convertYearPayload(payload: YearPayload): YearPayload {
-  return {
-    ...payload,
-    months: payload.months.map((month) => ({
-      ...month,
-      sample: month.sample.map(convertPhoto)
-    }))
-  };
-}
-
-function convertMonthPayload(payload: MonthPayload): MonthPayload {
-  return {
-    ...payload,
-    photos: payload.photos.map(convertPhoto)
-  };
-}
-
-function convertDirectoryPayload(payload: DirectoryPayload): DirectoryPayload {
-  return {
-    ...payload,
-    photos: payload.photos.map(convertPhoto)
-  };
-}
-
-function convertPhotoDetails(payload: PhotoDetails): PhotoDetails {
-  return {
-    ...payload,
-    photo: convertPhoto(payload.photo)
-  };
-}
+import type { GridModeApi, Unsubscribe } from "../shared/types";
 
 function subscribe<T>(eventName: string, callback: (payload: T) => void): Unsubscribe {
   let disposed = false;
@@ -120,63 +18,46 @@ function subscribe<T>(eventName: string, callback: (payload: T) => void): Unsubs
 
   return () => {
     disposed = true;
-    void unlisten.then((stop) => stop());
+    void unlisten.then((stop) => stop()).catch(() => undefined);
   };
 }
 
-function createTauriApi(): GridModeApi {
-  return {
-    settings: {
-      get: async () => convertSettingsPayload(await invoke<SettingsPayload>("settings_get")),
-      chooseRoot: async () => convertSettingsPayload(await invoke<SettingsPayload>("settings_choose_root")),
-      addRoot: async () => convertSettingsPayload(await invoke<SettingsPayload>("settings_add_root")),
-      removeRoot: async (rootPath: string) =>
-        convertSettingsPayload(await invoke<SettingsPayload>("settings_remove_root", { rootPath })),
-      clearCache: async () => convertSettingsPayload(await invoke<SettingsPayload>("settings_clear_cache")),
-      rebuildThumbnails: async () => {
-        const payload = await invoke<ThumbnailRebuildPayload>("settings_rebuild_thumbnails");
-        return {
-          ...convertSettingsPayload(payload),
-          thumbnails: payload.thumbnails
-        };
-      },
-      chooseExclusion: async () =>
-        convertSettingsPayload(await invoke<SettingsPayload>("settings_choose_exclusion")),
-      removeExclusion: async (excludedPath: string) =>
-        convertSettingsPayload(await invoke<SettingsPayload>("settings_remove_exclusion", { excludedPath }))
-    },
-    library: {
-      scan: async (force = false) => convertSummary(await invoke<LibrarySummary>("library_scan", { force })),
-      getHome: async () => convertHomePayload(await invoke<HomePayload>("library_get_home")),
-      getYears: async () => convertSummary(await invoke<LibrarySummary>("library_get_years")),
-      getYear: async (year: number) => convertYearPayload(await invoke<YearPayload>("library_get_year", { year })),
-      getMonth: async (year: number, month: number) =>
-        convertMonthPayload(await invoke<MonthPayload>("library_get_month", { year, month })),
-      getDirectory: async (directoryPath: string) =>
-        convertDirectoryPayload(
-          await invoke<DirectoryPayload>("library_get_directory", { directoryPath })
-        ),
-      onProgress: (callback: (progress: ScanProgress) => void) => subscribe("scan:progress", callback)
-    },
-    photo: {
-      getDetails: async (photoPath: string) =>
-        convertPhotoDetails(await invoke<PhotoDetails>("photo_get_details", { photoPath }))
-    },
-    updates: {
-      check: (options = {}) => invoke<UpdateStatus>("updates_check", options),
-      download: () => invoke<UpdateStatus>("updates_download"),
-      openDownload: (downloadUrl: string) =>
-        invoke<UpdateStatus>("updates_open_download", { downloadUrl }),
-      install: () => invoke<UpdateStatus>("updates_install"),
-      onStatus: (callback: (status: UpdateStatus) => void) => subscribe("updates:status", callback)
-    }
-  };
-}
-
-if (!window.gridMode && !isTauriRuntime()) {
-  throw new Error("GridMode desktop bridge is not available.");
-}
-
-export const gridModeApi: GridModeApi = window.gridMode ?? createTauriApi();
-
-export type GridModeRendererApi = typeof gridModeApi;
+// Photo URLs arrive ready to use: the backend builds them for the
+// gridmode-photo scheme, so payloads pass straight through.
+export const gridModeApi: GridModeApi = {
+  settings: {
+    get: () => invoke("settings_get"),
+    chooseRoot: () => invoke("settings_choose_root"),
+    addRoot: () => invoke("settings_add_root"),
+    removeRoot: (rootPath) => invoke("settings_remove_root", { rootPath }),
+    clearCache: () => invoke("settings_clear_cache"),
+    rebuildThumbnails: () => invoke("settings_rebuild_thumbnails"),
+    chooseExclusion: () => invoke("settings_choose_exclusion"),
+    removeExclusion: (excludedPath) => invoke("settings_remove_exclusion", { excludedPath })
+  },
+  library: {
+    scan: (force = false) => invoke("library_scan", { force }),
+    getHome: () => invoke("library_get_home"),
+    getYears: () => invoke("library_get_years"),
+    getYear: (year) => invoke("library_get_year", { year }),
+    getMonth: (year, month) => invoke("library_get_month", { year, month }),
+    getFolders: () => invoke("library_get_folders"),
+    getDirectory: (directoryPath) => invoke("library_get_directory", { directoryPath }),
+    search: (query) => invoke("library_search", { query }),
+    onProgress: (callback) => subscribe("scan:progress", callback),
+    onChanged: (callback) => subscribe("library:changed", callback)
+  },
+  photo: {
+    getDetails: (photoPath) => invoke("photo_get_details", { photoPath }),
+    reveal: (photoPath) => invoke("photo_reveal", { photoPath }),
+    open: (photoPath) => invoke("photo_open", { photoPath }),
+    openMap: (photoPath) => invoke("photo_open_map", { photoPath })
+  },
+  updates: {
+    check: (options = {}) => invoke("updates_check", options),
+    download: () => invoke("updates_download"),
+    openDownload: (downloadUrl) => invoke("updates_open_download", { downloadUrl }),
+    install: () => invoke("updates_install"),
+    onStatus: (callback) => subscribe("updates:status", callback)
+  }
+};

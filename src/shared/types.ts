@@ -1,140 +1,24 @@
-export interface Settings {
-  photoDirectory?: string;
-  photoDirectories?: string[];
-  excludedDirectories?: string[];
-  lastScanAt?: string;
-}
+// Data types are generated from the Rust models by `cargo test`; see
+// src-tauri/src/model.rs. Only the renderer-side API surface lives here.
+export type * from "./generated/bindings";
 
-export interface SettingsPayload {
-  settings: Settings;
-  summary: LibrarySummary;
-}
+import type {
+  DirectoryPayload,
+  FoldersPayload,
+  HomePayload,
+  LibrarySummary,
+  MonthPayload,
+  PhotoDetails,
+  ScanProgress,
+  SearchPayload,
+  SearchQuery,
+  SettingsPayload,
+  ThumbnailRebuildPayload,
+  UpdateStatus,
+  YearPayload
+} from "./generated/bindings";
 
-export interface PhotoLocation {
-  latitude: number;
-  longitude: number;
-}
-
-export interface PhotoAsset {
-  id: string;
-  name: string;
-  path: string;
-  directory: string;
-  extension: string;
-  size: number;
-  cacheKey: string;
-  url: string;
-  thumbnailUrl: string;
-  capturedAt: string;
-  dateSource: "exif" | "file";
-  year: number;
-  month: number;
-  monthName: string;
-  location?: PhotoLocation;
-  width?: number;
-  height?: number;
-}
-
-export interface YearSummary {
-  year: number;
-  count: number;
-  sample: PhotoAsset[];
-}
-
-export interface MonthSummary {
-  year: number;
-  month: number;
-  monthName: string;
-  count: number;
-  sample: PhotoAsset[];
-}
-
-export interface LibrarySummary {
-  rootDir?: string;
-  rootDirs?: string[];
-  photoCount: number;
-  years: YearSummary[];
-  lastScanAt?: string;
-  warnings: string[];
-}
-
-export type ScanPhase =
-  | "idle"
-  | "discovering"
-  | "reading-metadata"
-  | "generating-thumbnails"
-  | "complete"
-  | "error";
-
-export interface ScanProgress {
-  phase: ScanPhase;
-  rootDir?: string;
-  foldersScanned?: number;
-  photosFound?: number;
-  photosProcessed?: number;
-  photosReused?: number;
-  photosChanged?: number;
-  photosRemoved?: number;
-  thumbnailsGenerated?: number;
-  thumbnailsReused?: number;
-  thumbnailFailures?: number;
-  foldersExcluded?: number;
-  totalPhotos?: number;
-  currentPath?: string;
-  message?: string;
-}
-
-export interface ThumbnailCacheSummary {
-  total: number;
-  generated: number;
-  reused: number;
-  failed: number;
-}
-
-export interface ThumbnailRebuildPayload extends SettingsPayload {
-  thumbnails: ThumbnailCacheSummary;
-}
-
-export interface HomePayload {
-  summary: LibrarySummary;
-  photos: PhotoAsset[];
-}
-
-export interface YearPayload {
-  year: number;
-  months: MonthSummary[];
-}
-
-export interface MonthPayload {
-  year: number;
-  month: number;
-  monthName: string;
-  photos: PhotoAsset[];
-}
-
-export interface DirectoryBreadcrumb {
-  name: string;
-  path: string;
-}
-
-export interface DirectoryPayload {
-  path: string;
-  name: string;
-  photoCount: number;
-  breadcrumbs: DirectoryBreadcrumb[];
-  photos: PhotoAsset[];
-}
-
-export interface ExifRow {
-  label: string;
-  value: string;
-}
-
-export interface PhotoDetails {
-  photo: PhotoAsset;
-  exif: ExifRow[];
-  directoryBreadcrumbs: DirectoryBreadcrumb[];
-}
+export type Unsubscribe = () => void;
 
 export interface GridModeApi {
   settings: {
@@ -153,35 +37,24 @@ export interface GridModeApi {
     getYears: () => Promise<LibrarySummary>;
     getYear: (year: number) => Promise<YearPayload>;
     getMonth: (year: number, month: number) => Promise<MonthPayload>;
+    getFolders: () => Promise<FoldersPayload>;
     getDirectory: (directoryPath: string) => Promise<DirectoryPayload>;
-    onProgress: (callback: (progress: ScanProgress) => void) => () => void;
+    search: (query: SearchQuery) => Promise<SearchPayload>;
+    onProgress: (callback: (progress: ScanProgress) => void) => Unsubscribe;
+    /** Fired after a background rescan picks up added, changed, or removed photos. */
+    onChanged: (callback: (summary: LibrarySummary) => void) => Unsubscribe;
   };
   photo: {
     getDetails: (photoPath: string) => Promise<PhotoDetails>;
+    reveal: (photoPath: string) => Promise<void>;
+    open: (photoPath: string) => Promise<void>;
+    openMap: (photoPath: string) => Promise<void>;
   };
   updates: {
     check: (options?: { automatic?: boolean }) => Promise<UpdateStatus>;
     download: () => Promise<UpdateStatus>;
     openDownload: (downloadUrl: string) => Promise<UpdateStatus>;
     install: () => Promise<UpdateStatus>;
-    onStatus: (callback: (status: UpdateStatus) => void) => () => void;
+    onStatus: (callback: (status: UpdateStatus) => void) => Unsubscribe;
   };
-}
-
-export type UpdateState =
-  | "idle"
-  | "checking"
-  | "available"
-  | "not-available"
-  | "downloading"
-  | "downloaded"
-  | "error";
-
-export interface UpdateStatus {
-  state: UpdateState;
-  version?: string;
-  message?: string;
-  percent?: number;
-  downloadUrl?: string;
-  manualDownload?: boolean;
 }
