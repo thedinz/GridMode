@@ -1,6 +1,6 @@
 {
   "name": "gridmode",
-  "version": "0.1.9",
+  "version": "1.0.0",
   "description": "GridMode is a desktop photo viewer built around your folders, EXIF dates, and fast visual wandering.",
   "author": "thedinz",
   "license": "MIT",
@@ -10,6 +10,9 @@
     "build": "pnpm build:renderer",
     "build:renderer": "tsc -p tsconfig.renderer.json && vite build",
     "typecheck": "tsc -p tsconfig.renderer.json --pretty",
+    "test": "vitest run",
+    "test:rust": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "gen:types": "cargo test --manifest-path src-tauri/Cargo.toml export_bindings",
     "dist": "tauri build",
     "dist:win": "tauri build --bundles nsis",
     "dist:mac": "tauri build --bundles dmg,app --target universal-apple-darwin",
@@ -31,6 +34,7 @@
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.2",
-    "vite": "^6.0.6"
+    "vite": "^6.0.6",
+    "vitest": "^3.2.7"
   }
 }
