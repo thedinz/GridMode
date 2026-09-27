@@ -1,6 +1,6 @@
 [package]
 name = "gridmode"
-version = "0.1.9"
+version = "1.0.0"
 description = "GridMode is a desktop photo viewer built around your folders, EXIF dates, and fast visual wandering."
 authors = ["thedinz"]
 license = "MIT"
@@ -21,12 +21,19 @@ tauri-build = { version = "2.6.3", features = [] }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
 image = { version = "0.24.9", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+kamadak-exif = "0.6"
 log = "0.4"
+notify-debouncer-mini = "0.7.0"
 reqwest = { version = "0.13", default-features = false, features = ["json"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha1 = "0.10"
-tauri = { version = "2.11.3", features = ["protocol-asset"] }
+tauri = { version = "2.11.3", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-log = "2"
+tauri-plugin-opener = "2"
 tauri-plugin-updater = "2.10.1"
+ts-rs = { version = "10.1.0", features = ["no-serde-warnings"] }
+
+[target."cfg(windows)".dependencies]
+windows = { version = "0.61", features = ["Win32_Graphics_Imaging", "Win32_System_Com", "Win32_Foundation"] }

@@ -11,6 +11,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
-    strictPort: true
+    strictPort: true,
+    watch: {
+      // The Rust build writes (and on Windows locks) files under src-tauri/target;
+      // watching them crashes the dev server mid-build.
+      ignored: ["**/src-tauri/**"]
+    }
   }
 });
