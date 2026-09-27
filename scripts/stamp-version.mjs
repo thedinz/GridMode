@@ -31,12 +31,15 @@ writeJson("src-tauri/tauri.conf.json", tauriConfig);
 
 const cargoPath = path.join(repoRoot, "src-tauri/Cargo.toml");
 const cargoToml = readFileSync(cargoPath, "utf8");
-const updatedCargoToml = cargoToml.replace(/^version = ".*"$/m, `version = "${version}"`);
+// The first `version = "..."` line is the [package] version. Match on the line
+// rather than comparing output, so a file already at this version (e.g. a
+// release of the committed version) is not mistaken for a missing line.
+const cargoVersionLine = /^version = "[^"]*"(?=\r?$)/m;
 
-if (updatedCargoToml === cargoToml) {
+if (!cargoVersionLine.test(cargoToml)) {
   console.error("Could not find Cargo.toml package version to update.");
   process.exit(1);
 }
 
-writeFileSync(cargoPath, updatedCargoToml);
+writeFileSync(cargoPath, cargoToml.replace(cargoVersionLine, `version = "${version}"`));
 console.log(`Stamped GridMode version ${version}`);
