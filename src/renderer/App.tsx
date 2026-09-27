@@ -3,6 +3,7 @@ import type {
   DirectoryPayload,
   FoldersPayload,
   LibrarySummary,
+  LicenseStatus,
   MonthPayload,
   PhotoAsset,
   PhotoDetails,
@@ -29,6 +30,7 @@ import {
   YearView,
   type LibraryTab
 } from "./views/BrowseViews";
+import { LicenseView } from "./views/LicenseView";
 import { PhotoView } from "./views/PhotoView";
 import { SearchView } from "./views/SearchView";
 import { FirstRunView, SettingsView } from "./views/SettingsView";
@@ -98,6 +100,7 @@ export function App(): JSX.Element {
   const [view, setViewState] = useState<View>({ name: "home" });
   const [state, setState] = useState<AppState>(initialState);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus>({ state: "idle" });
+  const [license, setLicense] = useState<LicenseStatus>();
   const [gridSize, setGridSize] = useState<GridSize>(loadGridSize);
   const [notice, setNotice] = useState<string>();
   // Bumped when a background rescan changes the library, so self-loading views refetch.
@@ -109,6 +112,17 @@ export function App(): JSX.Element {
   const stateRef = useRef(state);
   stateRef.current = state;
   const noticeTimer = useRef<number>();
+  const mountedRef = useRef(true);
+  // Library loading only ever runs once, kicked off as soon as the license allows it.
+  const libraryStartedRef = useRef(false);
+
+  useEffect(() => {
+    // Set on every mount: StrictMode mounts, unmounts, and remounts in development.
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const setView = useCallback((next: View) => {
     viewRef.current = next;
@@ -287,13 +301,17 @@ export function App(): JSX.Element {
     [fetchHome, runTask]
   );
 
-  useEffect(() => {
-    let mounted = true;
+  /** Loads settings and the home grid. Runs once, only after licensing allows use of the app. */
+  const startLibrary = useCallback(() => {
+    if (libraryStartedRef.current) {
+      return;
+    }
+    libraryStartedRef.current = true;
 
     gridModeApi.settings
       .get()
       .then(async ({ settings, summary }) => {
-        if (!mounted) {
+        if (!mountedRef.current) {
           return;
         }
         mergeState({ settings, summary });
@@ -304,7 +322,7 @@ export function App(): JSX.Element {
         }
         if (summary.photoCount > 0) {
           await loadHome("Loading cached library");
-          if (mounted) {
+          if (mountedRef.current) {
             void checkLibraryForChanges(false);
           }
         } else {
@@ -316,11 +334,44 @@ export function App(): JSX.Element {
         }
       })
       .catch((error) => {
-        if (mounted) {
+        if (mountedRef.current) {
           mergeState({ loading: false, statusText: undefined });
           notify(getErrorMessage(error));
         }
       });
+  }, [checkLibraryForChanges, loadHome, mergeState, notify]);
+
+  useEffect(() => {
+    gridModeApi.license
+      .getStatus()
+      .then((status) => {
+        if (!mountedRef.current) {
+          return;
+        }
+        setLicense(status);
+        if (status.canUseApp) {
+          startLibrary();
+        } else {
+          mergeState({ loading: false, statusText: undefined });
+        }
+      })
+      .catch((error) => {
+        if (mountedRef.current) {
+          mergeState({ loading: false, statusText: undefined });
+          notify(getErrorMessage(error));
+        }
+      });
+
+    // If the trial starts, a license activates, or a revoked license is
+    // restored, kick off the library load the same way first launch does.
+    const unsubscribeLicense = gridModeApi.license.onChanged((status) => {
+      setLicense((previous) => {
+        if (status.canUseApp && !previous?.canUseApp) {
+          startLibrary();
+        }
+        return status;
+      });
+    });
 
     const unsubscribeUpdates = gridModeApi.updates.onStatus(setUpdateStatus);
     const unsubscribeScan = gridModeApi.library.onProgress((progress) => {
@@ -345,13 +396,13 @@ export function App(): JSX.Element {
     }, automaticUpdateCheckDelayMs);
 
     return () => {
-      mounted = false;
       window.clearTimeout(updateCheckTimer);
+      unsubscribeLicense();
       unsubscribeUpdates();
       unsubscribeScan();
       unsubscribeChanges();
     };
-  }, [checkLibraryForChanges, loadHome, loadView, mergeState, notify]);
+  }, [loadView, mergeState, notify, startLibrary]);
 
   const refresh = useCallback(() => {
     if (viewRef.current.name === "home") {
@@ -476,6 +527,28 @@ export function App(): JSX.Element {
     saveGridSize(size);
   }, []);
 
+  const startTrial = useCallback(() => {
+    void gridModeApi.license.startTrial().then(setLicense).catch((error) => notify(getErrorMessage(error)));
+  }, [notify]);
+
+  const activateLicense = useCallback((licenseKey: string) => gridModeApi.license.activate(licenseKey).then(setLicense), []);
+
+  const deactivateLicense = useCallback(() => {
+    void gridModeApi.license.deactivate().then(setLicense).catch((error) => notify(getErrorMessage(error)));
+  }, [notify]);
+
+  const refreshLicense = useCallback(() => {
+    void gridModeApi.license.refresh().then(setLicense).catch((error) => notify(getErrorMessage(error)));
+  }, [notify]);
+
+  const dismissLicenseNotice = useCallback(() => {
+    void gridModeApi.license.dismissNotice().then(setLicense).catch((error) => notify(getErrorMessage(error)));
+  }, [notify]);
+
+  const buyLicense = useCallback(() => {
+    void gridModeApi.license.openCheckout().catch((error) => notify(getErrorMessage(error)));
+  }, [notify]);
+
   const photoDirectories = getPhotoDirectories(state.settings);
   const hasPhotoDirectory = photoDirectories.length > 0;
   const backgroundThumbnailProgress =
@@ -499,6 +572,7 @@ export function App(): JSX.Element {
             settings={state.settings}
             summary={state.summary}
             updateStatus={updateStatus}
+            license={license}
             gridSize={gridSize}
             libraryStatusText={state.settingsStatusText}
             isBusy={state.loading || state.scanProgress?.phase === "generating-thumbnails"}
@@ -516,6 +590,10 @@ export function App(): JSX.Element {
             onClearCache={() => void clearCache()}
             onCheckUpdates={() => void gridModeApi.updates.check()}
             onGridSizeChange={changeGridSize}
+            onStartTrial={startTrial}
+            onActivateLicense={activateLicense}
+            onDeactivateLicense={deactivateLicense}
+            onBuyLicense={buyLicense}
           />
         );
       case "library":
@@ -584,6 +662,21 @@ export function App(): JSX.Element {
     }
   };
 
+  if (license && !license.canUseApp) {
+    return (
+      <div className="app-shell first-run-shell">
+        <LicenseView
+          status={license}
+          onStartTrial={startTrial}
+          onActivate={activateLicense}
+          onRefresh={refreshLicense}
+          onOpenCheckout={buyLicense}
+          onDismissNotice={dismissLicenseNotice}
+        />
+      </div>
+    );
+  }
+
   return (
     <PhotoActionsProvider
       onOpenPhoto={openPhoto}
@@ -594,11 +687,13 @@ export function App(): JSX.Element {
           <TopBar
             section={navSection(view)}
             summary={state.summary}
+            license={license}
             onHome={() => navigate({ name: "home" })}
             onLibrary={() => navigate({ name: "library", tab: view.name === "library" ? view.tab : "dates" })}
             onSettings={() => setView({ name: "settings" })}
             onRefresh={refresh}
             onSearch={(text) => setView({ name: "search", query: { text } })}
+            onBuy={buyLicense}
           />
         ) : null}
         <UpdateBanner status={updateStatus} />

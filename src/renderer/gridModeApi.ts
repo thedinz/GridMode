@@ -59,5 +59,15 @@ export const gridModeApi: GridModeApi = {
     openDownload: (downloadUrl) => invoke("updates_open_download", { downloadUrl }),
     install: () => invoke("updates_install"),
     onStatus: (callback) => subscribe("updates:status", callback)
+  },
+  license: {
+    getStatus: () => invoke("license_get_status"),
+    startTrial: () => invoke("license_start_trial"),
+    activate: (licenseKey) => invoke("license_activate", { licenseKey }),
+    deactivate: () => invoke("license_deactivate"),
+    refresh: () => invoke("license_refresh"),
+    dismissNotice: () => invoke("license_dismiss_notice"),
+    openCheckout: () => invoke("license_open_checkout"),
+    onChanged: (callback) => subscribe("license:changed", callback)
   }
 };

@@ -570,6 +570,26 @@ button:disabled {
   outline: none;
 }
 
+.trial-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trial-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid rgba(230, 189, 125, 0.35);
+  border-radius: 999px;
+  background: rgba(230, 189, 125, 0.12);
+  color: #e6bd7d;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .toast {
   position: fixed;
   bottom: 22px;
@@ -1017,6 +1037,78 @@ button:disabled {
   gap: 10px;
 }
 
+.license-gate {
+  max-width: 640px;
+  margin: 0 auto;
+}
+
+.license-gate p {
+  max-width: 460px;
+  color: rgba(244, 240, 231, 0.68);
+  line-height: 1.5;
+}
+
+.license-eyebrow {
+  margin: 0;
+  color: #9ed1b7;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.license-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 460px;
+  padding: 10px 14px;
+  border: 1px solid rgba(230, 189, 125, 0.3);
+  border-radius: 8px;
+  background: rgba(230, 189, 125, 0.1);
+  color: #e6bd7d;
+}
+
+.license-key-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  width: 100%;
+  max-width: 460px;
+}
+
+.license-key-input {
+  flex: 1 1 260px;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(244, 240, 231, 0.11);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #f4f0e7;
+  font-size: 14px;
+}
+
+.license-key-input:focus {
+  outline: none;
+  border-color: rgba(158, 209, 183, 0.5);
+}
+
+.license-key-error {
+  flex-basis: 100%;
+  color: #e6bd7d;
+}
+
+.license-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.license-test-mode {
+  color: rgba(244, 240, 231, 0.4);
+  font-size: 12px;
+}
+
 .loading-overlay {
   position: fixed;
   top: 78px;
@@ -1125,6 +1217,10 @@ button:disabled {
     width: 150px;
   }
 
+  .trial-indicator .text-button span {
+    display: none;
+  }
+
   .view-stack,
   .settings-view,
   .first-run-view,
@@ -1168,5 +1264,26 @@ button:disabled {
   .metadata-title {
     align-items: start;
     flex-direction: column;
+  }
+}
+
+/* Brand and trial status share the left column so the toolbar never spills over the nav. */
+.top-bar-start {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+@media (max-width: 1440px) {
+  .top-bar-start .trial-indicator .text-button span {
+    display: none;
+  }
+}
+
+@media (max-width: 860px) {
+  .top-bar-start {
+    display: none;
   }
 }

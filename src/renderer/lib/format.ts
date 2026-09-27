@@ -115,3 +115,7 @@ export function formatScanProgress(progress: ScanProgress, percent: number | und
 export function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+
+export function formatTrialRemaining(days: number): string {
+  return `${days.toLocaleString()} ${days === 1 ? "day" : "days"} remaining`;
+}

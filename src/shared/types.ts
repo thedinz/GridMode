@@ -7,6 +7,7 @@ import type {
   FoldersPayload,
   HomePayload,
   LibrarySummary,
+  LicenseStatus,
   MonthPayload,
   PhotoDetails,
   ScanProgress,
@@ -56,5 +57,15 @@ export interface GridModeApi {
     openDownload: (downloadUrl: string) => Promise<UpdateStatus>;
     install: () => Promise<UpdateStatus>;
     onStatus: (callback: (status: UpdateStatus) => void) => Unsubscribe;
+  };
+  license: {
+    getStatus: () => Promise<LicenseStatus>;
+    startTrial: () => Promise<LicenseStatus>;
+    activate: (licenseKey: string) => Promise<LicenseStatus>;
+    deactivate: () => Promise<LicenseStatus>;
+    refresh: () => Promise<LicenseStatus>;
+    dismissNotice: () => Promise<LicenseStatus>;
+    openCheckout: () => Promise<void>;
+    onChanged: (callback: (status: LicenseStatus) => void) => Unsubscribe;
   };
 }

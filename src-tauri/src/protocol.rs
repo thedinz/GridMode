@@ -16,6 +16,12 @@ pub fn handle_photo_request(app: &AppHandle, uri: &str) -> http::Response<Vec<u8
         Ok(request) => request,
         Err(error) => return text_response(http::StatusCode::BAD_REQUEST, &error),
     };
+    if crate::licensing::require_access(app).is_err() {
+        return text_response(
+            http::StatusCode::FORBIDDEN,
+            crate::licensing::LICENSE_REQUIRED,
+        );
+    }
 
     let state = app.state::<AppState>();
     let Some(photo) = state.find_photo(&file_path) else {

@@ -4,6 +4,7 @@ import {
   formatCoordinates,
   formatDimensions,
   formatScanProgress,
+  formatTrialRemaining,
   getErrorMessage,
   getScanProgressPercent
 } from "./format";
@@ -52,6 +53,17 @@ describe("scan progress", () => {
 
   it("falls back to the message once complete", () => {
     expect(formatScanProgress({ phase: "complete", message: "Indexed 4 photos" }, undefined)).toBe("Indexed 4 photos");
+  });
+});
+
+describe("formatTrialRemaining", () => {
+  it("uses singular day for one day left", () => {
+    expect(formatTrialRemaining(1)).toBe("1 day remaining");
+  });
+
+  it("uses plural days otherwise", () => {
+    expect(formatTrialRemaining(7)).toBe("7 days remaining");
+    expect(formatTrialRemaining(0)).toBe("0 days remaining");
   });
 });
 
