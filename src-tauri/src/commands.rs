@@ -4,6 +4,7 @@
 //! folder dialogs must never run on the main thread, where they would freeze
 //! the window.
 
+use crate::library::Library;
 use crate::library::{
     directory_breadcrumbs, directory_payload, folders_payload, month_payload, on_this_day,
     random_photos, search, time_seed, today_local, year_payload, HOME_PHOTO_COUNT,
@@ -12,7 +13,7 @@ use crate::library::{
 use crate::metadata::{detail_rows, read_exif};
 use crate::model::{
     DirectoryPayload, FoldersPayload, HomePayload, LibrarySummary, MonthPayload, PhotoAsset,
-    PhotoDetails, SearchPayload, SearchQuery, SettingsPayload, ThumbnailRebuildPayload,
+    PhotoDetails, SearchPayload, SearchQuery, Settings, SettingsPayload, ThumbnailRebuildPayload,
     YearPayload,
 };
 use crate::paths::canonicalize_path;
@@ -42,8 +43,14 @@ fn pick_folder(app: &AppHandle, title: &str) -> Option<String> {
         .map(|selected| canonicalize_path(&selected.to_string()))
 }
 
+/// The current library, provided this installation is licensed or in its trial.
+fn licensed_library(app: &AppHandle) -> Result<(Settings, Library), String> {
+    crate::licensing::require_access(app)?;
+    ensure_library(app)
+}
+
 fn library_photo(app: &AppHandle, photo_path: &str) -> Result<PhotoAsset, String> {
-    ensure_library(app)?;
+    licensed_library(app)?;
     app.state::<AppState>()
         .find_photo(photo_path)
         .ok_or_else(|| "Photo is not part of the current library.".to_string())
@@ -169,6 +176,7 @@ pub async fn settings_rebuild_thumbnails(
 #[tauri::command]
 pub async fn library_scan(app: AppHandle, force: bool) -> Result<LibrarySummary, String> {
     blocking(app, move |app| {
+        crate::licensing::require_access(app)?;
         Ok(run_scan(app, force, ScanMode::Interactive)?.library.summary)
     })
     .await
@@ -177,7 +185,7 @@ pub async fn library_scan(app: AppHandle, force: bool) -> Result<LibrarySummary,
 #[tauri::command]
 pub async fn library_get_home(app: AppHandle) -> Result<HomePayload, String> {
     blocking(app, |app| {
-        let (_, library) = ensure_library(app)?;
+        let (_, library) = licensed_library(app)?;
         Ok(HomePayload {
             photos: random_photos(&library.photos, HOME_PHOTO_COUNT, time_seed()),
             on_this_day: on_this_day(&library.photos, today_local(), ON_THIS_DAY_LIMIT),
@@ -189,13 +197,13 @@ pub async fn library_get_home(app: AppHandle) -> Result<HomePayload, String> {
 
 #[tauri::command]
 pub async fn library_get_years(app: AppHandle) -> Result<LibrarySummary, String> {
-    blocking(app, |app| Ok(ensure_library(app)?.1.summary)).await
+    blocking(app, |app| Ok(licensed_library(app)?.1.summary)).await
 }
 
 #[tauri::command]
 pub async fn library_get_year(app: AppHandle, year: i32) -> Result<YearPayload, String> {
     blocking(app, move |app| {
-        Ok(year_payload(&ensure_library(app)?.1.photos, year))
+        Ok(year_payload(&licensed_library(app)?.1.photos, year))
     })
     .await
 }
@@ -207,7 +215,7 @@ pub async fn library_get_month(
     month: u32,
 ) -> Result<MonthPayload, String> {
     blocking(app, move |app| {
-        Ok(month_payload(&ensure_library(app)?.1.photos, year, month))
+        Ok(month_payload(&licensed_library(app)?.1.photos, year, month))
     })
     .await
 }
@@ -215,7 +223,7 @@ pub async fn library_get_month(
 #[tauri::command]
 pub async fn library_get_folders(app: AppHandle) -> Result<FoldersPayload, String> {
     blocking(app, |app| {
-        let (settings, library) = ensure_library(app)?;
+        let (settings, library) = licensed_library(app)?;
         Ok(folders_payload(
             &library.photos,
             &get_photo_directories(&settings),
@@ -230,7 +238,7 @@ pub async fn library_get_directory(
     directory_path: String,
 ) -> Result<DirectoryPayload, String> {
     blocking(app, move |app| {
-        let (settings, library) = ensure_library(app)?;
+        let (settings, library) = licensed_library(app)?;
         directory_payload(
             &library.photos,
             &get_photo_directories(&settings),
@@ -245,7 +253,7 @@ pub async fn library_get_directory(
 pub async fn library_search(app: AppHandle, query: SearchQuery) -> Result<SearchPayload, String> {
     blocking(app, move |app| {
         Ok(search(
-            &ensure_library(app)?.1.photos,
+            &licensed_library(app)?.1.photos,
             &query,
             SEARCH_RESULT_LIMIT,
         ))

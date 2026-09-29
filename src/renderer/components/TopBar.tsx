@@ -1,33 +1,55 @@
-import { Grid2X2, Library, RefreshCcw, Search, Settings, Sparkles } from "lucide-react";
+import { Download, Grid2X2, Library, RefreshCcw, Search, Settings, Sparkles } from "lucide-react";
 import { useState } from "react";
-import type { LibrarySummary } from "../../shared/types";
+import type { LibrarySummary, LicenseStatus } from "../../shared/types";
+import { formatTrialRemaining } from "../lib/format";
 
 export type NavSection = "home" | "library" | "other";
 
 export function TopBar({
   section,
   summary,
+  license,
   onHome,
   onLibrary,
   onSettings,
   onRefresh,
-  onSearch
+  onSearch,
+  onBuy
 }: {
   section: NavSection;
   summary: LibrarySummary;
+  license?: LicenseStatus;
   onHome: () => void;
   onLibrary: () => void;
   onSettings: () => void;
   onRefresh: () => void;
   onSearch: (text: string) => void;
+  onBuy: () => void;
 }): JSX.Element {
   const [searchText, setSearchText] = useState("");
+  const isTrialing = license?.state === "trial" && license.trialDaysRemaining !== undefined;
 
   return (
     <header className="top-bar">
-      <div className="brand-mark">
-        <Grid2X2 size={22} />
-        <span>GridMode</span>
+      <div className="top-bar-start">
+        <div className="brand-mark">
+          <Grid2X2 size={22} />
+          <span>GridMode</span>
+        </div>
+        {isTrialing ? (
+          <div className="trial-indicator">
+            <span className="trial-pill">GridMode Trial — {formatTrialRemaining(license.trialDaysRemaining ?? 0)}</span>
+            <button
+              className="text-button"
+              onClick={onBuy}
+              title={`Buy GridMode — ${license.priceLabel}`}
+              disabled={!license.checkoutAvailable}
+            >
+              <Download size={14} />
+              <span>Buy GridMode — {license.priceLabel}</span>
+            </button>
+          </div>
+        ) : null}
       </div>
       <nav className="nav-group">
         <button

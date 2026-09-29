@@ -1,5 +1,6 @@
 mod commands;
 mod library;
+mod licensing;
 mod metadata;
 mod model;
 mod paths;
@@ -36,10 +37,28 @@ pub fn run() {
 
             // Debug builds can point at a scratch data folder so development never
             // touches the settings and index of an installed copy.
-            let data_dir = match std::env::var_os("GRIDMODE_DATA_DIR") {
-                Some(dir) if cfg!(debug_assertions) => std::path::PathBuf::from(dir),
-                _ => app.path().app_data_dir()?,
+            let dev_data_dir =
+                std::env::var_os("GRIDMODE_DATA_DIR").filter(|_| cfg!(debug_assertions));
+            let keyring_account = if dev_data_dir.is_some() {
+                licensing::store::KEYRING_DEV_ACCOUNT
+            } else {
+                licensing::store::KEYRING_ACCOUNT
             };
+            let data_dir = match dev_data_dir {
+                Some(dir) => std::path::PathBuf::from(dir),
+                None => app.path().app_data_dir()?,
+            };
+            app.manage(licensing::LicenseService::new(
+                licensing::store::LicenseStorage::new(
+                    Box::new(licensing::store::KeyringStore::new(keyring_account)),
+                    data_dir.clone(),
+                ),
+                licensing::api::LicenseApi::new(licensing::config::LICENSE_API_BASE),
+                licensing::config::ACTIVE,
+                licensing::config::GRIDMODE_MAJOR_VERSION,
+                licensing::unix_now(),
+            ));
+            licensing::start_background_validation(app.handle());
             app.manage(state::AppState::load(data_dir));
             app.manage(watcher::WatcherState::default());
             app.manage(updates::PendingUpdateState::default());
@@ -70,7 +89,14 @@ pub fn run() {
             updates::updates_check,
             updates::updates_download,
             updates::updates_open_download,
-            updates::updates_install
+            updates::updates_install,
+            licensing::license_get_status,
+            licensing::license_start_trial,
+            licensing::license_activate,
+            licensing::license_deactivate,
+            licensing::license_refresh,
+            licensing::license_dismiss_notice,
+            licensing::license_open_checkout
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -20,6 +20,46 @@ onThisDay: Array<PhotoAsset>, };
 
 export type LibrarySummary = { rootDir?: string, rootDirs: Array<string>, photoCount: number, years: Array<YearSummary>, lastScanAt?: string, warnings: Array<string>, };
 
+export type LicenseState = "trialAvailable" | "trial" | "trialExpired" | "licensed" | "validationRequired";
+
+export type LicenseStatus = { state: LicenseState, canUseApp: boolean, 
+/**
+ * Major version of this build, e.g. 1 for GridMode 1.x.
+ */
+appMajor: number, 
+/**
+ * False until Lemon Squeezy identifiers are filled in for this build.
+ */
+configured: boolean, modeLabel: string, priceLabel: string, trialLengthDays: number, trialDaysRemaining?: number, trialEndsAt?: string, license?: LicenseSummary, 
+/**
+ * Set when this installation holds a genuine GridMode license for a
+ * different major version (e.g. a 1.x license in a 2.x build).
+ */
+otherMajorLicense?: number, 
+/**
+ * Revalidation is overdue but within the offline grace period. For quiet
+ * display only; the app stays fully usable.
+ */
+offline: boolean, 
+/**
+ * A one-time message, e.g. after Lemon Squeezy revoked the license.
+ */
+notice?: string, checkoutAvailable: boolean, };
+
+export type LicenseSummary = { 
+/**
+ * Only the last four characters are shown, e.g. `••••-••••-••••-ABCD`.
+ */
+maskedKey: string, 
+/**
+ * Major version this license covers, when it is a GridMode license.
+ */
+major?: number, 
+/**
+ * Lemon Squeezy's key status at the last check.
+ */
+status: string, variantName?: string, lastValidatedAt: string, };
+
 export type MonthPayload = { year: number, month: number, monthName: string, photos: Array<PhotoAsset>, };
 
 export type MonthSummary = { year: number, month: number, monthName: string, count: number, sample: Array<PhotoAsset>, };

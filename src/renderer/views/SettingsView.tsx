@@ -1,8 +1,10 @@
-import { Download, FolderOpen, FolderX, Image, RefreshCcw, Trash2, X } from "lucide-react";
-import type { LibrarySummary, Settings, UpdateStatus } from "../../shared/types";
+import { Download, FolderOpen, FolderX, Image, KeyRound, RefreshCcw, Trash2, X } from "lucide-react";
+import { useState } from "react";
+import type { LibrarySummary, LicenseStatus, Settings, UpdateStatus } from "../../shared/types";
 import { GridModeLogo } from "../components/GridModeLogo";
+import { LicenseKeyForm } from "../components/LicenseKeyForm";
 import { Metric } from "../components/Sections";
-import { formatDateTime } from "../lib/format";
+import { formatDateTime, formatTrialRemaining } from "../lib/format";
 import { formatExcludedDirectory, getPhotoDirectories } from "../lib/paths";
 import { gridSizes, type GridSize } from "../lib/prefs";
 
@@ -10,6 +12,7 @@ export function SettingsView({
   settings,
   summary,
   updateStatus,
+  license,
   gridSize,
   libraryStatusText,
   isBusy,
@@ -22,11 +25,16 @@ export function SettingsView({
   onRebuildThumbnails,
   onClearCache,
   onCheckUpdates,
-  onGridSizeChange
+  onGridSizeChange,
+  onStartTrial,
+  onActivateLicense,
+  onDeactivateLicense,
+  onBuyLicense
 }: {
   settings: Settings;
   summary: LibrarySummary;
   updateStatus: UpdateStatus;
+  license?: LicenseStatus;
   gridSize: GridSize;
   libraryStatusText?: string;
   isBusy: boolean;
@@ -40,6 +48,10 @@ export function SettingsView({
   onClearCache: () => void;
   onCheckUpdates: () => void;
   onGridSizeChange: (size: GridSize) => void;
+  onStartTrial: () => void;
+  onActivateLicense: (licenseKey: string) => Promise<unknown>;
+  onDeactivateLicense: () => void;
+  onBuyLicense: () => void;
 }): JSX.Element {
   const excludedDirectories = settings.excludedDirectories ?? [];
   const photoDirectories = getPhotoDirectories(settings);
@@ -49,10 +61,19 @@ export function SettingsView({
       <div className="settings-panel">
         <div className="view-heading">
           <div>
-            <p>Settings</p>
-            <h1>Photo locations</h1>
+            <p>GridMode</p>
+            <h1>Settings</h1>
           </div>
         </div>
+        {license ? (
+          <LicenseSection
+            license={license}
+            onStartTrial={onStartTrial}
+            onActivateLicense={onActivateLicense}
+            onDeactivateLicense={onDeactivateLicense}
+            onBuyLicense={onBuyLicense}
+          />
+        ) : null}
         <div className="settings-section">
           <div className="section-title-row">
             <div>
@@ -229,6 +250,183 @@ export function SettingsView({
         {updateStatus.message ? <p className="settings-note">{updateStatus.message}</p> : null}
       </div>
     </section>
+  );
+}
+
+function LicenseSection({
+  license,
+  onStartTrial,
+  onActivateLicense,
+  onDeactivateLicense,
+  onBuyLicense
+}: {
+  license: LicenseStatus;
+  onStartTrial: () => void;
+  onActivateLicense: (licenseKey: string) => Promise<unknown>;
+  onDeactivateLicense: () => void;
+  onBuyLicense: () => void;
+}): JSX.Element {
+  const [showKeyForm, setShowKeyForm] = useState(false);
+  const buyDisabled = !license.checkoutAvailable;
+
+  const deactivate = () => {
+    if (window.confirm("Deactivate GridMode on this computer? You can activate it again with your license key.")) {
+      onDeactivateLicense();
+    }
+  };
+
+  const wrongMajorNote = license.otherMajorLicense ? (
+    <p className="settings-note">
+      This license is for GridMode {license.otherMajorLicense}.x and does not include GridMode {license.appMajor}.
+    </p>
+  ) : null;
+
+  const statusBody = (): JSX.Element => {
+    switch (license.state) {
+      case "licensed":
+        return (
+          <>
+            <div className="settings-metrics license-metrics">
+              <Metric
+                label="Edition"
+                value={`GridMode ${license.appMajor}.x`}
+              />
+              <Metric
+                label="Status"
+                value="Licensed"
+              />
+              <Metric
+                label="License"
+                value={license.license?.maskedKey ?? "Unknown"}
+              />
+            </div>
+            {license.offline ? (
+              <p className="settings-note">
+                Last verified {license.license ? formatDateTime(license.license.lastValidatedAt) : "recently"}.
+                GridMode will check again when you're online.
+              </p>
+            ) : null}
+            {wrongMajorNote}
+            <div className="settings-actions">
+              <button
+                className="text-button"
+                onClick={deactivate}
+              >
+                <X size={16} />
+                <span>Deactivate This Computer</span>
+              </button>
+            </div>
+          </>
+        );
+      case "trial":
+        return (
+          <>
+            <div className="settings-metrics license-metrics">
+              <Metric
+                label="Plan"
+                value={`${license.trialLengthDays}-day trial`}
+              />
+              <Metric
+                label="Remaining"
+                value={
+                  license.trialDaysRemaining !== undefined
+                    ? formatTrialRemaining(license.trialDaysRemaining)
+                    : "-"
+                }
+              />
+            </div>
+            <div className="settings-actions">
+              <button
+                className="text-button primary"
+                onClick={onBuyLicense}
+                disabled={buyDisabled}
+              >
+                <Download size={16} />
+                <span>Buy GridMode — {license.priceLabel}</span>
+              </button>
+              {!showKeyForm ? (
+                <button
+                  className="text-button"
+                  onClick={() => setShowKeyForm(true)}
+                  disabled={!license.configured}
+                >
+                  <KeyRound size={16} />
+                  <span>Enter license key</span>
+                </button>
+              ) : null}
+            </div>
+            {showKeyForm && license.configured ? (
+              <LicenseKeyForm
+                onActivate={onActivateLicense}
+                onActivated={() => setShowKeyForm(false)}
+                autoFocus={false}
+              />
+            ) : null}
+          </>
+        );
+      case "trialExpired":
+        return (
+          <>
+            <p className="settings-note">Your GridMode trial has ended.</p>
+            <div className="settings-actions">
+              <button
+                className="text-button primary"
+                onClick={onBuyLicense}
+                disabled={buyDisabled}
+              >
+                <Download size={16} />
+                <span>Buy GridMode — {license.priceLabel}</span>
+              </button>
+              {!showKeyForm ? (
+                <button
+                  className="text-button"
+                  onClick={() => setShowKeyForm(true)}
+                  disabled={!license.configured}
+                >
+                  <KeyRound size={16} />
+                  <span>Enter License Key</span>
+                </button>
+              ) : null}
+            </div>
+            {showKeyForm && license.configured ? (
+              <LicenseKeyForm
+                onActivate={onActivateLicense}
+                onActivated={() => setShowKeyForm(false)}
+                autoFocus={false}
+              />
+            ) : null}
+          </>
+        );
+      case "validationRequired":
+        return <p className="settings-note">Connect to the internet so GridMode can confirm your license.</p>;
+      case "trialAvailable":
+      default:
+        return (
+          <div className="settings-actions">
+            <button
+              className="text-button primary"
+              onClick={onStartTrial}
+            >
+              <span>Start {license.trialLengthDays}-day free trial</span>
+            </button>
+          </div>
+        );
+    }
+  };
+
+  return (
+    <div className="settings-section">
+      <div className="section-title-row">
+        <div>
+          <p>Account</p>
+          <h2>License</h2>
+        </div>
+      </div>
+      {statusBody()}
+      {license.modeLabel === "Test Mode" ? (
+        <p className="settings-note license-test-mode">Lemon Squeezy Test Mode</p>
+      ) : null}
+    </div>
   );
 }
 
