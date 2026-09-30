@@ -1,9 +1,9 @@
-name: Publish private website image
+﻿name: Publish private website image
 
 on:
   push:
     branches:
-      - codex/gridmode-website
+      - website
     paths:
       - website/**
       - .dockerignore
